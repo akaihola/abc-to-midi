@@ -78,9 +78,9 @@ impl Track<'_> {
         symbols: &[AbcMusicSymbol],
         moments: &mut Vec<Moment>,
         accidental_tracker: &mut AccidentalTracker,
-        vel: u7,
+        _vel: u7,
     ) -> Result<(), Box<dyn Error>> {
-        let mut vel = vel;
+        let mut time = 0u32;
         for symbol in symbols.iter() {
             let visual_symbol = MusicSymbol(symbol.clone());
             match visual_symbol.0 {
@@ -90,9 +90,13 @@ impl Track<'_> {
                     moments.push(Moment {
                         ticks,
                         kind: Track::interpret_symbol(visual_symbol, accidental_tracker)?,
-                        vel,
+                        vel: match time {
+                            0 => 105.into(),
+                            960 => 95.into(),
+                            _ => 80.into(),
+                        },
                     });
-                    vel = 80.into(); // next notes in bar softer
+                    time += u32::from(ticks);
                 }
                 // Examples of chords: [C^D] [_EF2]
                 AbcChord { notes, length, .. } => {
@@ -108,14 +112,19 @@ impl Track<'_> {
                     moments.push(Moment {
                         ticks,
                         kind: Sound::Chord(chord),
-                        vel,
+                        vel: match time {
+                            0 => 105.into(),
+                            960 => 95.into(),
+                            _ => 80.into(),
+                        },
                     });
+                    time += u32::from(ticks);
                 }
                 // Barline, notated using the | symbol
                 AbcBar(_) => {
                     // Forget accidentals before entering the next bar.
                     accidental_tracker.clear();
-                    vel = 105.into(); // first note of bar louder
+                    time = 0;
                 }
                 AbcRest(rest) => {
                     let rest_length = match rest {
@@ -129,12 +138,13 @@ impl Track<'_> {
                             length * 4
                         }
                     };
-                    let tick_length = Self::time_into_ticks(rest_length as f32);
+                    let ticks = Self::time_into_ticks(rest_length as f32);
                     moments.push(Moment {
-                        ticks: tick_length,
+                        ticks,
                         kind: Sound::Rest,
                         vel: 0.into(),
                     });
+                    time += u32::from(ticks);
                 }
                 AbcVisualBreak => (),
                 AbcEnding(_) | AbcGraceNotes { .. } | AbcTuplet { .. } => todo!(),
