@@ -21,13 +21,20 @@ use midly::{
     MetaMessage::{EndOfTrack, KeySignature, Tempo, Text, TimeSignature, TrackName},
     MidiMessage::{NoteOff, NoteOn},
     Timing, TrackEvent,
-    TrackEventKind::{Meta, Midi},
+    TrackEventKind::{self, Meta},
 };
 use std::error::Error;
 
-enum Mode {
-    Sequence,
-    Chord,
+enum Sound {
+    Note(u7),
+    Chord(Vec<u7>),
+    Rest,
+}
+
+struct Moment {
+    ticks: u28,
+    kind: Sound,
+    vel: u7,
 }
 
 impl Track<'_> {
@@ -35,93 +42,99 @@ impl Track<'_> {
         symbols: &[AbcMusicSymbol],
         events: &mut Vec<TrackEvent>,
         channel: u4,
-        mode: Mode,
-        prev_length: f32,
-        accidental_tracker: &mut AccidentalTracker,
     ) -> Result<(), Box<dyn Error>> {
-        let mut prev_length: f32 = prev_length;
-        for (idx, symbol) in symbols.iter().enumerate() {
+        let mut accidental_tracker = AccidentalTracker::new();
+        let mut moments: Vec<Moment> = vec![];
+        Track::symbols_into_moments(symbols, &mut moments, &mut accidental_tracker, 105.into())?;
+        Track::moments_into_events(moments, events, channel)
+    }
+
+    fn interpret_symbol(
+        visual_symbol: MusicSymbol,
+        accidental_tracker: &mut AccidentalTracker,
+    ) -> Result<Sound, Box<dyn Error>> {
+        match visual_symbol.0 {
+            // Examples of notes: C ^D _E F2 G2/3
+            AbcNote { accidental, .. } => {
+                let played_symbol: MusicSymbol;
+                if accidental.is_some() {
+                    // Keep accidental for note, and remember it for next notes
+                    accidental_tracker.insert(&visual_symbol)?;
+                    played_symbol = visual_symbol;
+                } else {
+                    played_symbol = accidental_tracker.apply(&visual_symbol)?;
+                };
+
+                // This is where note conversion happens:
+                let key: u7 = played_symbol.try_into()?;
+                Ok(Sound::Note(key))
+            }
+            AbcRest { .. } => Ok(Sound::Rest),
+            _ => Err(Box::new(PitchConversionError)),
+        }
+    }
+
+    fn symbols_into_moments(
+        symbols: &[AbcMusicSymbol],
+        moments: &mut Vec<Moment>,
+        accidental_tracker: &mut AccidentalTracker,
+        vel: u7,
+    ) -> Result<(), Box<dyn Error>> {
+        let mut vel = vel;
+        for symbol in symbols.iter() {
             let visual_symbol = MusicSymbol(symbol.clone());
-            let delta: u28 = match (&mode, idx == 0) {
-                // All subsequent symbols in a chord occur at the same moment
-                // as the first symbol.
-                (Mode::Chord, false) => 0.into(),
-                // Sequential symbols and first symbols of chords occur when the
-                // previous symbol ends, i.e. the delta is the previous symbol's duration.
-                _ => 1.into(),
-            };
             match visual_symbol.0 {
                 // Examples of notes: C ^D _E F2 G2/3
-                AbcNote {
-                    length, accidental, ..
-                } => {
-                    let played_symbol = if accidental.is_some() {
-                        // Keep accidental for note, and remember it for next notes
-                        accidental_tracker.insert(&visual_symbol)?;
-                        visual_symbol
-                    } else {
-                        // No accidental on note, apply remembered one
-                        accidental_tracker.apply(&visual_symbol)?
-                    };
-
-                    // This is where note conversion happens:
-                    let key: u7 = played_symbol.try_into()?;
-                    let note_on = MidiMessage(NoteOn {
-                        key,
-                        vel: match idx {
-                            0 => 105,
-                            _ => 80,
-                        }
-                        .into(),
+                AbcNote { length, .. } => {
+                    let ticks = Self::time_into_ticks(length);
+                    moments.push(Moment {
+                        ticks,
+                        kind: Track::interpret_symbol(visual_symbol, accidental_tracker)?,
+                        vel,
                     });
-                    let note_off = MidiMessage(NoteOff { key, vel: 0.into() });
-
-                    // Add a MIDI event corresponding to the ABC note
-                    events.push(TrackEvent {
-                        delta,
-                        kind: Midi {
-                            channel,
-                            message: note_on.0,
-                        },
-                    });
-                    events.push(TrackEvent {
-                        delta: (Self::time_into_ticks(length).as_int() - 1).into(),
-                        kind: Midi {
-                            channel,
-                            message: note_off.0,
-                        },
-                    });
-                    prev_length = length;
+                    vel = 80.into(); // next notes in bar softer
                 }
                 // Examples of chords: [C^D] [_EF2]
                 AbcChord { notes, length, .. } => {
-                    Self::symbols_into_events(
-                        &notes,
-                        events,
-                        channel,
-                        Mode::Chord,
-                        prev_length,
-                        accidental_tracker,
-                    )?;
-                    prev_length = length;
+                    let ticks = Self::time_into_ticks(length);
+                    let mut chord: Vec<u7> = vec![];
+                    for symbol in notes {
+                        if let Sound::Note(key) =
+                            Track::interpret_symbol(MusicSymbol(symbol), accidental_tracker)?
+                        {
+                            chord.push(key);
+                        }
+                    }
+                    moments.push(Moment {
+                        ticks,
+                        kind: Sound::Chord(chord),
+                        vel,
+                    });
                 }
                 // Barline, notated using the | symbol
                 AbcBar(_) => {
                     // Forget accidentals before entering the next bar.
                     accidental_tracker.clear();
+                    vel = 105.into(); // first note of bar louder
                 }
                 AbcRest(rest) => {
-                    match rest {
+                    let rest_length = match rest {
                         AbcRestEnum::Note(length) | AbcRestEnum::NoteHidden(length) => {
                             // Work-around for https://gitlab.com/Askaholic/rust-abc-2/-/issues/2
                             // Only rests corresponding to integer multiples of quarter notes are supported.
-                            prev_length += length as f32
+                            length
                         }
                         AbcRestEnum::Measure(length) | AbcRestEnum::MeasureHidden(length) => {
                             // TODO: fix for other time signatures than 4/4
-                            prev_length += length as f32 * 4.0
+                            length * 4
                         }
-                    }
+                    };
+                    let tick_length = Self::time_into_ticks(rest_length as f32);
+                    moments.push(Moment {
+                        ticks: tick_length,
+                        kind: Sound::Rest,
+                        vel: 0.into(),
+                    });
                 }
                 AbcVisualBreak => (),
                 AbcEnding(_) | AbcGraceNotes { .. } | AbcTuplet { .. } => todo!(),
@@ -129,19 +142,81 @@ impl Track<'_> {
         }
         Ok(())
     }
+
+    fn moments_into_events(
+        moments: Vec<Moment>,
+        events: &mut Vec<TrackEvent>,
+        channel: u4,
+    ) -> Result<(), Box<dyn Error>> {
+        for Moment { ticks, kind, vel } in moments {
+            match kind {
+                Sound::Note(key) => {
+                    events.push(TrackEvent {
+                        delta: 1.into(),
+                        kind: TrackEventKind::Midi {
+                            channel,
+                            message: NoteOn { key, vel },
+                        },
+                    });
+                    events.push(TrackEvent {
+                        delta: (ticks.as_int() - 1).into(),
+                        kind: TrackEventKind::Midi {
+                            channel,
+                            message: NoteOff { key, vel: 0.into() },
+                        },
+                    })
+                }
+                Sound::Chord(keys) => {
+                    for (index, &key) in keys.iter().enumerate() {
+                        events.push(TrackEvent {
+                            delta: ((1 + 9 * index) as u32).into(),
+                            kind: TrackEventKind::Midi {
+                                channel,
+                                message: NoteOn { key, vel },
+                            },
+                        });
+                    }
+                    for (index, &key) in keys.iter().rev().enumerate() {
+                        events.push(TrackEvent {
+                            delta: match index {
+                                0 => (ticks.as_int() + 7 - 9 * keys.len() as u32).into(),
+                                _ => 0.into(),
+                            },
+                            kind: TrackEventKind::Midi {
+                                channel,
+                                message: NoteOff { key, vel: 0.into() },
+                            },
+                        });
+                    }
+                }
+                Sound::Rest => {}
+            }
+        }
+        Ok(())
+    }
 }
 
-impl<'a> TryFrom<AbcTune> for Smf<'a> {
+#[derive(Debug)]
+struct TitleMissingError;
+
+impl<'a> TryFrom<&'a AbcTune> for Smf<'a> {
     type Error = Box<dyn Error>;
 
-    fn try_from(value: AbcTune) -> Result<Self, Self::Error> {
-        let body = value.body.unwrap();
-        let smf: Smf = body.try_into()?;
+    fn try_from(value: &'a AbcTune) -> Result<Self, Self::Error> {
+        let title = &value
+            .header
+            .info
+            .iter()
+            .find(|&f| f.0 == 'T')
+            .ok_or_else(|| "No title field".to_string())?
+            .1;
+        let body = &value.body;
+        let smf: Smf = Smf::try_from((title.as_str(), body))?;
         Ok(smf)
     }
 }
 
-fn get_front_matter() -> Vec<TrackEvent<'static>> {
+fn get_front_matter(title: &str) -> Vec<TrackEvent> {
     vec![
         TrackEvent {
             delta: 0.into(),
@@ -161,35 +236,39 @@ fn get_front_matter() -> Vec<TrackEvent<'static>> {
         },
         TrackEvent {
             delta: 0.into(),
-            kind: Meta(TrackName("Three quarter notes".as_bytes())),
+            kind: Meta(TrackName(title.as_bytes())),
         },
     ]
 }
 
-impl<'a> TryFrom<AbcTuneBody> for Smf<'a> {
+impl<'a> TryFrom<(&'a str, &Option<AbcTuneBody>)> for Smf<'a> {
     type Error = Box<dyn Error>;
 
-    fn try_from(value: AbcTuneBody) -> Result<Self, Self::Error> {
+    fn try_from(value: (&'a str, &Option<AbcTuneBody>)) -> Result<Self, Self::Error> {
+        let (title, maybe_music): (&'a str, &Option<AbcTuneBody>) = value;
         let mut smf: Smf = Smf::new(Header::new(
             Format::SingleTrack,
             Timing::Metrical(480.into()),
         ));
-        let mut tracks: Vec<Vec<TrackEvent>> = value
-            .music
-            .iter()
-            .map(|ml| {
-                let x: Track = ml.clone().try_into().unwrap();
-                x.0
-            })
-            .collect();
-        let mut first_track = get_front_matter();
-        first_track.append(&mut tracks.remove(0));
+        let mut first_track = get_front_matter(title);
+        let mut other_tracks: Vec<Vec<TrackEvent>> = vec![];
+        if let Some(AbcTuneBody { music }) = maybe_music {
+            let mut tracks: Vec<Vec<TrackEvent>> = music
+                .iter()
+                .map(|ml| {
+                    let x: Track = ml.clone().try_into().unwrap();
+                    x.0
+                })
+                .collect();
+            first_track.append(&mut tracks.remove(0));
+            other_tracks.append(&mut tracks);
+        }
         first_track.push(TrackEvent {
             delta: 26.into(),
             kind: Meta(EndOfTrack),
         });
         smf.0.tracks.push(first_track);
-        smf.0.tracks.append(&mut tracks);
+        smf.0.tracks.append(&mut other_tracks);
         Ok(smf)
     }
 }
@@ -199,17 +278,8 @@ impl TryFrom<AbcMusicLine> for Track<'_> {
 
     fn try_from(value: AbcMusicLine) -> Result<Self, Self::Error> {
         let mut events: Vec<TrackEvent> = vec![];
-        let mut accidental_tracker = AccidentalTracker::new();
         let channel = u4::from(0);
-        let prev_length = 0.0f32;
-        Self::symbols_into_events(
-            &value.symbols,
-            &mut events,
-            channel,
-            Mode::Sequence,
-            prev_length,
-            &mut accidental_tracker,
-        )?;
+        Self::symbols_into_events(&value.symbols, &mut events, channel)?;
         Ok(Track(events))
     }
 }
@@ -276,8 +346,6 @@ impl From<Accidental> for i8 {
 mod tests {
     use crate::{
         abc_wrappers::{Accidental, MusicSymbol, Note},
-        accidentals::AccidentalTracker,
-        conversion::Mode::Sequence,
         midly_wrappers::{MidiMessage, Track},
     };
     use abc_parser::{
@@ -288,9 +356,7 @@ mod tests {
             Note::{self as AbcNoteName, A, B, C, D, E, F, G},
         },
     };
-    use midly::{
-        num::u7, MidiMessage::NoteOn, TrackEvent, TrackEventKind::Midi,
-    };
+    use midly::{num::u7, MidiMessage::NoteOn, TrackEvent, TrackEventKind::Midi};
     use pretty_assertions::assert_eq;
     use rstest::rstest;
 
@@ -347,16 +413,7 @@ mod tests {
             AbcMusicSymbol::new_note(vec![], None, C, 1, 1.0, None),
         ];
         let mut events = vec![];
-        let mut accidental_tracker = AccidentalTracker::new();
-        Track::symbols_into_events(
-            symbols,
-            &mut events,
-            1.into(),
-            Sequence,
-            1.0,
-            &mut accidental_tracker,
-        )
-        .unwrap();
+        Track::symbols_into_events(symbols, &mut events, 1.into()).unwrap();
         let pitches: Vec<i8> = events.iter().filter_map(extract_note_on).collect();
         assert_eq!(pitches, &[61, 61]);
     }
