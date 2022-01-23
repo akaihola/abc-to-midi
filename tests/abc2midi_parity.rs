@@ -8,6 +8,8 @@ use rstest::rstest;
     name,
     case::three_quarters("three-quarters"),
     case::chord("chord"),
+    case::two_bars("two-bars"),
+    case::accidentals("accidentals"),
 )]
 fn compare(name: &str) {
     let abc2midi_raw = std::fs::read(format!("test-asset/{}.mid", name)).unwrap();
