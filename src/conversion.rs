@@ -1,19 +1,22 @@
 use crate::{
     abc_wrappers::{Accidental, MusicSymbol, Note},
     accidentals::AccidentalTracker,
-    errors::PitchConversionError,
+    errors::{InfoFieldMissing, PitchConversionError, Result},
     midly_wrappers::{MidiMessage, Smf, Track},
 };
-use abc_parser::datatypes::{
-    Accidental::{DoubleFlat, DoubleSharp, Flat, Sharp},
-    MusicLine as AbcMusicLine,
-    MusicSymbol::{
-        self as AbcMusicSymbol, Bar as AbcBar, Chord as AbcChord, Ending as AbcEnding,
-        GraceNotes as AbcGraceNotes, Note as AbcNote, Rest as AbcRest, Tuplet as AbcTuplet,
-        VisualBreak as AbcVisualBreak,
+use abc_parser::{
+    abc,
+    datatypes::{
+        Accidental::{DoubleFlat, DoubleSharp, Flat, Sharp},
+        InfoField, MusicLine as AbcMusicLine,
+        MusicSymbol::{
+            self as AbcMusicSymbol, Bar as AbcBar, Chord as AbcChord, Ending as AbcEnding,
+            GraceNotes as AbcGraceNotes, Note as AbcNote, Rest as AbcRest, Tuplet as AbcTuplet,
+            VisualBreak as AbcVisualBreak,
+        },
+        Note::{A, B, C, D, E, F, G},
+        Rest as AbcRestEnum, Tune as AbcTune, TuneBody as AbcTuneBody,
     },
-    Note::{A, B, C, D, E, F, G},
-    Rest as AbcRestEnum, Tune as AbcTune, TuneBody as AbcTuneBody,
 };
 use midly::{
     num::{u28, u4, u7},
@@ -42,7 +45,7 @@ impl Track<'_> {
         symbols: &[AbcMusicSymbol],
         events: &mut Vec<TrackEvent>,
         channel: u4,
-    ) -> Result<(), Box<dyn Error>> {
+    ) -> Result<()> {
         let mut accidental_tracker = AccidentalTracker::new();
         let mut moments: Vec<Moment> = vec![];
         Track::symbols_into_moments(symbols, &mut moments, &mut accidental_tracker, 105.into())?;
@@ -52,7 +55,7 @@ impl Track<'_> {
     fn interpret_symbol(
         visual_symbol: MusicSymbol,
         accidental_tracker: &mut AccidentalTracker,
-    ) -> Result<Sound, Box<dyn Error>> {
+    ) -> Result<Sound> {
         match visual_symbol.0 {
             // Examples of notes: C ^D _E F2 G2/3
             AbcNote { accidental, .. } => {
@@ -79,7 +82,7 @@ impl Track<'_> {
         moments: &mut Vec<Moment>,
         accidental_tracker: &mut AccidentalTracker,
         _vel: u7,
-    ) -> Result<(), Box<dyn Error>> {
+    ) -> Result<()> {
         let mut time = 0u32;
         for symbol in symbols.iter() {
             let visual_symbol = MusicSymbol(symbol.clone());
@@ -157,7 +160,7 @@ impl Track<'_> {
         moments: Vec<Moment>,
         events: &mut Vec<TrackEvent>,
         channel: u4,
-    ) -> Result<(), Box<dyn Error>> {
+    ) -> Result<()> {
         for Moment { ticks, kind, vel } in moments {
             match kind {
                 Sound::Note(key) => {
@@ -206,28 +209,42 @@ impl Track<'_> {
     }
 }
 
-#[derive(Debug)]
-struct TitleMissingError;
+struct InfoFields<'a> {
+    title: &'a str,
+    key_signature: &'a str,
+}
+
+impl<'a> Smf<'a> {
+    fn get_info_field(info: &'a [InfoField], c: char, default: Option<&'a str>) -> Result<&'a str> {
+        match info.iter().find(|&f| f.0 == c) {
+            Some(InfoField(_char, string)) => Ok(string),
+            None => match default {
+                Some(s) => Ok(s),
+                None => Err(Box::new(InfoFieldMissing(c))),
+            },
+        }
+    }
+}
 
 impl<'a> TryFrom<&'a AbcTune> for Smf<'a> {
     type Error = Box<dyn Error>;
 
-    fn try_from(value: &'a AbcTune) -> Result<Self, Self::Error> {
-        let title = &value
-            .header
-            .info
-            .iter()
-            .find(|&f| f.0 == 'T')
-            .ok_or_else(|| "No title field".to_string())?
-            .1;
+    fn try_from(value: &'a AbcTune) -> Result<Self> {
+        let info_fields = InfoFields {
+            title: Smf::get_info_field(&value.header.info, 'T', None)?,
+            key_signature: Smf::get_info_field(&value.header.info, 'K', Some("C"))?,
+        };
         let body = &value.body;
-        let smf: Smf = Smf::try_from((title.as_str(), body))?;
+        let smf: Smf = Smf::try_from((info_fields, body))?;
         Ok(smf)
     }
 }
 
-fn get_front_matter(title: &str) -> Vec<TrackEvent> {
-    vec![
+fn get_front_matter(info: InfoFields) -> Result<Vec<TrackEvent>> {
+    let key_sig_note = &Note(abc::note_uppercase(info.key_signature)?);
+    let key_sig_num: i8 = key_sig_note.into();
+
+    Ok(vec![
         TrackEvent {
             delta: 0.into(),
             kind: Meta(Text("note track".as_bytes())),
@@ -238,7 +255,7 @@ fn get_front_matter(title: &str) -> Vec<TrackEvent> {
         },
         TrackEvent {
             delta: 0.into(),
-            kind: Meta(KeySignature(0, false)),
+            kind: Meta(KeySignature(key_sig_num, false)),
         },
         TrackEvent {
             delta: 0.into(),
@@ -246,21 +263,21 @@ fn get_front_matter(title: &str) -> Vec<TrackEvent> {
         },
         TrackEvent {
             delta: 0.into(),
-            kind: Meta(TrackName(title.as_bytes())),
+            kind: Meta(TrackName(info.title.as_bytes())),
         },
-    ]
+    ])
 }
 
-impl<'a> TryFrom<(&'a str, &Option<AbcTuneBody>)> for Smf<'a> {
+impl<'a> TryFrom<(InfoFields<'a>, &Option<AbcTuneBody>)> for Smf<'a> {
     type Error = Box<dyn Error>;
 
-    fn try_from(value: (&'a str, &Option<AbcTuneBody>)) -> Result<Self, Self::Error> {
-        let (title, maybe_music): (&'a str, &Option<AbcTuneBody>) = value;
+    fn try_from(value: (InfoFields<'a>, &Option<AbcTuneBody>)) -> Result<Self> {
+        let (info, maybe_music): (InfoFields<'a>, &Option<AbcTuneBody>) = value;
         let mut smf: Smf = Smf::new(Header::new(
             Format::SingleTrack,
             Timing::Metrical(480.into()),
         ));
-        let mut first_track = get_front_matter(title);
+        let mut first_track = get_front_matter(info)?;
         let mut other_tracks: Vec<Vec<TrackEvent>> = vec![];
         if let Some(AbcTuneBody { music }) = maybe_music {
             let mut tracks: Vec<Vec<TrackEvent>> = music
@@ -286,7 +303,7 @@ impl<'a> TryFrom<(&'a str, &Option<AbcTuneBody>)> for Smf<'a> {
 impl TryFrom<AbcMusicLine> for Track<'_> {
     type Error = Box<dyn Error>;
 
-    fn try_from(value: AbcMusicLine) -> Result<Self, Self::Error> {
+    fn try_from(value: AbcMusicLine) -> Result<Self> {
         let mut events: Vec<TrackEvent> = vec![];
         let channel = u4::from(0);
         Self::symbols_into_events(&value.symbols, &mut events, channel)?;
@@ -297,7 +314,7 @@ impl TryFrom<AbcMusicLine> for Track<'_> {
 impl TryFrom<MusicSymbol> for u7 {
     type Error = Box<dyn Error>;
 
-    fn try_from(value: MusicSymbol) -> Result<Self, Box<dyn Error>> {
+    fn try_from(value: MusicSymbol) -> Result<Self> {
         match value.0 {
             AbcMusicSymbol::Note {
                 accidental,
@@ -318,7 +335,7 @@ impl TryFrom<MusicSymbol> for u7 {
 impl TryFrom<MusicSymbol> for MidiMessage {
     type Error = Box<dyn Error>;
 
-    fn try_from(value: MusicSymbol) -> Result<Self, Self::Error> {
+    fn try_from(value: MusicSymbol) -> Result<Self> {
         Ok(MidiMessage(NoteOn {
             key: value.try_into()?,
             vel: 80.into(),
