@@ -28,9 +28,14 @@ use midly::{
 };
 use std::error::Error;
 
+struct MomentNote {
+    key: u7,
+    tie: bool,
+}
+
 enum Sound {
-    Note(u7),
-    Chord(Vec<u7>),
+    Note(MomentNote),
+    Chord(Vec<MomentNote>),
     Rest,
 }
 
@@ -58,7 +63,9 @@ impl Track<'_> {
     ) -> Result<Sound> {
         match visual_symbol.0 {
             // Examples of notes: C ^D _E F2 G2/3
-            AbcNote { accidental, .. } => {
+            AbcNote {
+                accidental, tie, ..
+            } => {
                 let played_symbol: MusicSymbol;
                 if accidental.is_some() {
                     // Keep accidental for note, and remember it for next notes
@@ -70,7 +77,10 @@ impl Track<'_> {
 
                 // This is where note conversion happens:
                 let key: u7 = played_symbol.try_into()?;
-                Ok(Sound::Note(key))
+                Ok(Sound::Note(MomentNote {
+                    key,
+                    tie: tie.is_some(),
+                }))
             }
             AbcRest { .. } => Ok(Sound::Rest),
             _ => Err(Box::new(PitchConversionError)),
@@ -104,12 +114,12 @@ impl Track<'_> {
                 // Examples of chords: [C^D] [_EF2]
                 AbcChord { notes, length, .. } => {
                     let ticks = Self::time_into_ticks(length);
-                    let mut chord: Vec<u7> = vec![];
+                    let mut chord: Vec<MomentNote> = vec![];
                     for symbol in notes {
-                        if let Sound::Note(key) =
+                        if let Sound::Note(note) =
                             Track::interpret_symbol(MusicSymbol(symbol), accidental_tracker)?
                         {
-                            chord.push(key);
+                            chord.push(note);
                         }
                     }
                     moments.push(Moment {
@@ -161,45 +171,61 @@ impl Track<'_> {
         events: &mut Vec<TrackEvent>,
         channel: u4,
     ) -> Result<()> {
+        let mut ties = [0u32; 128];
         for Moment { ticks, kind, vel } in moments {
             match kind {
-                Sound::Note(key) => {
-                    events.push(TrackEvent {
-                        delta: 1.into(),
-                        kind: TrackEventKind::Midi {
-                            channel,
-                            message: NoteOn { key, vel },
-                        },
-                    });
-                    events.push(TrackEvent {
-                        delta: (ticks.as_int() - 1).into(),
-                        kind: TrackEventKind::Midi {
-                            channel,
-                            message: NoteOff { key, vel: 0.into() },
-                        },
-                    })
-                }
-                Sound::Chord(keys) => {
-                    for (index, &key) in keys.iter().enumerate() {
+                Sound::Note(MomentNote { key, tie }) => {
+                    let key_index = usize::from(key.as_int());
+                    if ties[key_index] == 0 {
                         events.push(TrackEvent {
-                            delta: ((1 + 9 * index) as u32).into(),
+                            delta: 1.into(),
                             kind: TrackEventKind::Midi {
                                 channel,
                                 message: NoteOn { key, vel },
                             },
                         });
                     }
-                    for (index, &key) in keys.iter().rev().enumerate() {
+                    ties[key_index] += u32::from(ticks.as_int());
+                    if !tie {
                         events.push(TrackEvent {
-                            delta: match index {
-                                0 => (ticks.as_int() + 7 - 9 * keys.len() as u32).into(),
-                                _ => 0.into(),
-                            },
+                            delta: (ties[key_index] - 1).into(),
                             kind: TrackEventKind::Midi {
                                 channel,
                                 message: NoteOff { key, vel: 0.into() },
                             },
                         });
+                        ties[key_index] = 0;
+                    }
+                }
+                Sound::Chord(keys) => {
+                    for (index, &MomentNote { key, .. }) in keys.iter().enumerate() {
+                        let key_index = usize::from(key.as_int());
+                        if ties[key_index] == 0 {
+                            events.push(TrackEvent {
+                                delta: ((1 + 9 * index) as u32).into(),
+                                kind: TrackEventKind::Midi {
+                                    channel,
+                                    message: NoteOn { key, vel },
+                                },
+                            })
+                        }
+                        ties[key_index] += u32::from(ticks.as_int());
+                    }
+                    for (index, &MomentNote { key, tie }) in keys.iter().rev().enumerate() {
+                        let key_index = usize::from(key.as_int());
+                        if !tie {
+                            events.push(TrackEvent {
+                                delta: match index {
+                                    0 => (ticks.as_int() + 7 - 9 * keys.len() as u32).into(),
+                                    _ => 0.into(),
+                                },
+                                kind: TrackEventKind::Midi {
+                                    channel,
+                                    message: NoteOff { key, vel: 0.into() },
+                                },
+                            });
+                            ties[key_index] = 0;
+                        }
                     }
                 }
                 Sound::Rest => {}
