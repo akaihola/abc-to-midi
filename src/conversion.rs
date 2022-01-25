@@ -39,10 +39,39 @@ enum Sound {
     Rest,
 }
 
-struct Moment {
-    ticks: u28,
+pub struct Moment {
+    pub ticks: u28,
     kind: Sound,
     vel: u7,
+}
+
+struct TieTracker([u32; 128]);
+
+impl TieTracker {
+    fn new() -> Self {
+        Self([0; 128])
+    }
+
+    fn index(key: u7) -> usize {
+        usize::from(key.as_int())
+    }
+
+    fn is_not_tied(&self, key: u7) -> bool {
+        self.0[Self::index(key)] == 0
+    }
+
+    fn stretch(&mut self, key: u7, ticks: u28) {
+        self.0[Self::index(key)] += ticks.as_int();
+    }
+
+    fn duration(&self, key: u7, adjustment: i64) -> u28 {
+        let d = i64::from(self.0[Self::index(key)]) + adjustment;
+        u28::from(d as u32)
+    }
+
+    fn reset(&mut self, key: u7) {
+        self.0[Self::index(key)] = 0;
+    }
 }
 
 impl Track<'_> {
@@ -53,7 +82,7 @@ impl Track<'_> {
     ) -> Result<()> {
         let mut accidental_tracker = AccidentalTracker::new();
         let mut moments: Vec<Moment> = vec![];
-        Track::symbols_into_moments(symbols, &mut moments, &mut accidental_tracker, 105.into())?;
+        Track::symbols_into_moments(symbols, &mut moments, &mut accidental_tracker)?;
         Track::moments_into_events(moments, events, channel)
     }
 
@@ -87,14 +116,15 @@ impl Track<'_> {
         }
     }
 
-    fn symbols_into_moments(
-        symbols: &[AbcMusicSymbol],
+    pub fn symbols_into_moments<'a, I>(
+        symbols: I,
         moments: &mut Vec<Moment>,
         accidental_tracker: &mut AccidentalTracker,
-        _vel: u7,
-    ) -> Result<()> {
+    ) -> Result<()>
+    where I: IntoIterator<Item = &'a AbcMusicSymbol>,
+    {
         let mut time = 0u32;
-        for symbol in symbols.iter() {
+        for symbol in symbols {
             let visual_symbol = MusicSymbol(symbol.clone());
             match visual_symbol.0 {
                 // Examples of notes: C ^D _E F2 G2/3
@@ -171,12 +201,11 @@ impl Track<'_> {
         events: &mut Vec<TrackEvent>,
         channel: u4,
     ) -> Result<()> {
-        let mut ties = [0u32; 128];
+        let mut ties = TieTracker::new();
         for Moment { ticks, kind, vel } in moments {
             match kind {
                 Sound::Note(MomentNote { key, tie }) => {
-                    let key_index = usize::from(key.as_int());
-                    if ties[key_index] == 0 {
+                    if ties.is_not_tied(key) {
                         events.push(TrackEvent {
                             delta: 1.into(),
                             kind: TrackEventKind::Midi {
@@ -185,22 +214,21 @@ impl Track<'_> {
                             },
                         });
                     }
-                    ties[key_index] += u32::from(ticks.as_int());
+                    ties.stretch(key, ticks);
                     if !tie {
                         events.push(TrackEvent {
-                            delta: (ties[key_index] - 1).into(),
+                            delta: ties.duration(key, -1),
                             kind: TrackEventKind::Midi {
                                 channel,
                                 message: NoteOff { key, vel: 0.into() },
                             },
                         });
-                        ties[key_index] = 0;
+                        ties.reset(key)
                     }
                 }
                 Sound::Chord(keys) => {
                     for (index, &MomentNote { key, .. }) in keys.iter().enumerate() {
-                        let key_index = usize::from(key.as_int());
-                        if ties[key_index] == 0 {
+                        if ties.is_not_tied(key) {
                             events.push(TrackEvent {
                                 delta: ((1 + 9 * index) as u32).into(),
                                 kind: TrackEventKind::Midi {
@@ -209,10 +237,9 @@ impl Track<'_> {
                                 },
                             })
                         }
-                        ties[key_index] += u32::from(ticks.as_int());
+                        ties.stretch(key, ticks)
                     }
                     for (index, &MomentNote { key, tie }) in keys.iter().rev().enumerate() {
-                        let key_index = usize::from(key.as_int());
                         if !tie {
                             events.push(TrackEvent {
                                 delta: match index {
@@ -224,7 +251,7 @@ impl Track<'_> {
                                     message: NoteOff { key, vel: 0.into() },
                                 },
                             });
-                            ties[key_index] = 0;
+                            ties.reset(key)
                         }
                     }
                 }
