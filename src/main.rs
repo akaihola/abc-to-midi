@@ -6,12 +6,14 @@ use abc_parser::{
     },
 };
 use abc_to_midi::midly_wrappers::Track;
-use midly::{TrackEvent, TrackEventKind::Midi, MidiMessage::NoteOn};
+use midly::{MidiMessage::NoteOn, TrackEvent, TrackEventKind::Midi};
 
 fn main() {
     let m = abc::music_line("!f! ^C[F=AC]3/2[GBD] C[CEG]2").unwrap();
     print_symbols(&m.symbols);
-    let track = Track::try_from(m).unwrap();
+    let title = "title";
+    let key_signature = "C";
+    let track: Track = (title, key_signature, &m).try_into().unwrap();
     print_events(track);
 }
 
@@ -45,7 +47,11 @@ fn print_symbols(symbols: &[MusicSymbol]) {
 
 fn print_events(track: Track) {
     for &TrackEvent { delta, kind } in track.iter() {
-        if let Midi { message: NoteOn { key, .. }, .. } = kind {
+        if let Midi {
+            message: NoteOn { key, .. },
+            ..
+        } = kind
+        {
             println!("{:5} {:3}", delta, u8::from(key));
         }
     }

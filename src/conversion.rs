@@ -260,11 +260,6 @@ impl Track<'_> {
     }
 }
 
-struct InfoFields<'a> {
-    title: &'a str,
-    key_signature: &'a str,
-}
-
 impl<'a> Smf<'a> {
     fn get_info_field(info: &'a [InfoField], c: char, default: Option<&'a str>) -> Result<&'a str> {
         match info.iter().find(|&f| f.0 == c) {
@@ -281,18 +276,16 @@ impl<'a> TryFrom<&'a AbcTune> for Smf<'a> {
     type Error = Box<dyn Error>;
 
     fn try_from(value: &'a AbcTune) -> Result<Self> {
-        let info_fields = InfoFields {
-            title: Smf::get_info_field(&value.header.info, 'T', None)?,
-            key_signature: Smf::get_info_field(&value.header.info, 'K', Some("C"))?,
-        };
+        let title = Smf::get_info_field(&value.header.info, 'T', None)?;
+        let key_signature = Smf::get_info_field(&value.header.info, 'K', Some("C"))?;
         let body = &value.body;
-        let smf: Smf = Smf::try_from((info_fields, body))?;
+        let smf: Smf = Smf::try_from((title, key_signature, body))?;
         Ok(smf)
     }
 }
 
-fn get_front_matter(info: InfoFields) -> Result<Vec<TrackEvent>> {
-    let key_sig_note = &Note(abc::note_uppercase(info.key_signature)?);
+fn get_front_matter<'a>(title: &'a str, key_signature: &str) -> Result<Vec<TrackEvent<'a>>> {
+    let key_sig_note = &Note(abc::note_uppercase(key_signature)?);
     let key_sig_num: i8 = key_sig_note.into();
 
     Ok(vec![
@@ -314,28 +307,29 @@ fn get_front_matter(info: InfoFields) -> Result<Vec<TrackEvent>> {
         },
         TrackEvent {
             delta: 0.into(),
-            kind: Meta(TrackName(info.title.as_bytes())),
+            kind: Meta(TrackName(title.as_bytes())),
         },
     ])
 }
 
-impl<'a> TryFrom<(InfoFields<'a>, &Option<AbcTuneBody>)> for Smf<'a> {
+impl<'a> TryFrom<(&'a str, &'a str, &Option<AbcTuneBody>)> for Smf<'a> {
     type Error = Box<dyn Error>;
 
-    fn try_from(value: (InfoFields<'a>, &Option<AbcTuneBody>)) -> Result<Self> {
-        let (info, maybe_music): (InfoFields<'a>, &Option<AbcTuneBody>) = value;
+    fn try_from(value: (&'a str, &'a str, &Option<AbcTuneBody>)) -> Result<Self> {
+        let (title, key_signature, maybe_music) = value;
         let mut smf: Smf = Smf::new(Header::new(
             Format::SingleTrack,
             Timing::Metrical(480.into()),
         ));
-        let mut first_track = get_front_matter(info)?;
+        let mut first_track = get_front_matter(title, key_signature)?;
         let mut other_tracks: Vec<Vec<TrackEvent>> = vec![];
         if let Some(AbcTuneBody { music }) = maybe_music {
             let mut tracks: Vec<Vec<TrackEvent>> = music
                 .iter()
-                .map(|ml| {
-                    let x: Track = ml.clone().try_into().unwrap();
-                    x.0
+                .map(|music_line| {
+                    let line_with_info = (title, key_signature, music_line);
+                    let Track(track) = line_with_info.try_into().unwrap();
+                    track
                 })
                 .collect();
             first_track.append(&mut tracks.remove(0));
@@ -351,13 +345,14 @@ impl<'a> TryFrom<(InfoFields<'a>, &Option<AbcTuneBody>)> for Smf<'a> {
     }
 }
 
-impl TryFrom<AbcMusicLine> for Track<'_> {
+impl<'a> TryFrom<(&str, &str, &AbcMusicLine)> for Track<'a> {
     type Error = Box<dyn Error>;
 
-    fn try_from(value: AbcMusicLine) -> Result<Self> {
+    /// Converts an ABC line of music to a track of MIDI events
+    fn try_from(value: (&str, &str, &AbcMusicLine)) -> Result<Self> {
         let mut events: Vec<TrackEvent> = vec![];
         let channel = u4::from(0);
-        Self::symbols_into_events(&value.symbols, &mut events, channel)?;
+        Self::symbols_into_events(&value.2.symbols, &mut events, channel)?;
         Ok(Track(events))
     }
 }
@@ -479,7 +474,10 @@ mod tests {
         case("C z G2 | x2 C'2", &[1, 239, 1, 479, 1, 479], &[60, 67, 72]),
     )]
     fn music_line_try_into_track(music: &str, expect_deltas: &[u32], expect_notes: &[i8]) {
-        let track = abc::music_line(music).unwrap().try_into().unwrap();
+        let music_line = abc::music_line(music).unwrap();
+        let title = "title";
+        let key_signature = "C";
+        let track = (title, key_signature, &music_line).try_into().unwrap();
         assert_eq!(deltas(&track), expect_deltas);
         assert_eq!(note_ons_and_offs(&track), expect_notes);
     }
