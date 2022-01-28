@@ -49,7 +49,7 @@ pub fn key_into_note_name(key: u7) -> String {
         true => NOTE_NAMES_LOWER[pitch_class],
     };
 
-    format!("{}{}", pitch_symbol, octave)
+    format!("{pitch_symbol}{octave}")
 }
 
 const BAR_LENGTH: u32 = 1920;
@@ -60,8 +60,8 @@ fn print_midi<'a>(smf: &'a midly::Smf, first_bar_duration: u32) -> Vec<String> {
         tracks,
     } = smf;
     let mut v = vec![];
-    v.push(format!("format: {:?}", format));
-    v.push(format!("timing: {:?}", timing));
+    v.push(format!("format: {format:?}"));
+    v.push(format!("timing: {timing:?}"));
     for track in tracks {
         v.push(String::from("Track"));
         let mut ticks = BAR_LENGTH - first_bar_duration;
@@ -77,9 +77,9 @@ fn print_midi<'a>(smf: &'a midly::Smf, first_bar_duration: u32) -> Vec<String> {
                                 vel.as_int()
                             )
                         }
-                        _ => format!("{:?}", message),
+                        _ => format!("{message:?}"),
                     };
-                    format!("ch{:<2} {}", channel, msg)
+                    format!("ch{channel:<2} {msg}")
                 }
                 TrackEventKind::Meta(message) => match message {
                     Text(chars) => format!("Text('{}')", from_utf8(chars).unwrap()),
@@ -90,11 +90,7 @@ fn print_midi<'a>(smf: &'a midly::Smf, first_bar_duration: u32) -> Vec<String> {
                     format!("{:?}", kind)
                 }
             };
-            v.push(format!(
-                "{:>4} ticks {}",
-                format!("+{}", delta.as_int()),
-                content
-            ));
+            v.push(format!("{:>4} ticks {content}", format!("+{}", delta.as_int())));
             ticks += delta.as_int();
             if ticks >= BAR_LENGTH {
                 v.push(String::from("---------------------------"));
@@ -114,19 +110,22 @@ fn print_midi<'a>(smf: &'a midly::Smf, first_bar_duration: u32) -> Vec<String> {
     case::untitled_reel("untitled-reel")
 )]
 fn compare(name: &str) {
-    let abc2midi_raw = std::fs::read(format!("test-asset/{}.mid", name)).unwrap();
+    let abc2midi_raw = std::fs::read(format!("test-asset/{name}.mid")).unwrap();
     let abc2midi_output = midly::Smf::parse(&abc2midi_raw).unwrap();
 
-    let abc_example = std::fs::read_to_string(format!("test-asset/{}.abc", name)).unwrap();
+    let abc_example = std::fs::read_to_string(format!("test-asset/{name}.abc")).unwrap();
     let abc_parsed = &abc::tune(&abc_example).unwrap();
     let first_bar_duration = if let Some(TuneBody { music }) = &abc_parsed.body {
         if let Some(MusicLine { symbols }) = music.first() {
             let mut moments: Vec<Moment> = vec![];
             let mut accidental_tracker = AccidentalTracker::new();
-            let first_bar_symbols = symbols.iter().take_while(|&symbol| match symbol {
-                Bar(_) => false,
-                _ => true,
-            });
+            // let first_bar_symbols = symbols.iter().take_while(|&symbol| match symbol {
+            //     Bar(_) => false,
+            //     _ => true,
+            // });
+            let first_bar_symbols = symbols
+                .iter()
+                .take_while(|&symbol| !matches!(&symbol, Bar(_)));
             Track::symbols_into_moments(first_bar_symbols, &mut moments, &mut accidental_tracker)
                 .unwrap();
             moments.iter().map(|moment| moment.ticks.as_int()).sum()

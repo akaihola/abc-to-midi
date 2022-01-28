@@ -26,8 +26,7 @@ fn print_symbols(symbols: &[MusicSymbol]) {
                 ..
             } => {
                 println!(
-                    "{:?}{}{}",
-                    note,
+                    "{note:?}{}{octave}",
                     match accidental {
                         Some(Sharp) => "#",
                         Some(Flat) => "b",
@@ -36,7 +35,6 @@ fn print_symbols(symbols: &[MusicSymbol]) {
                         Some(Natural) => "=",
                         _ => "",
                     },
-                    octave,
                 )
             }
             MusicSymbol::Chord { notes, .. } => print_symbols(notes),
