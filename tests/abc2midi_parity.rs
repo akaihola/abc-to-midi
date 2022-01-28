@@ -54,7 +54,7 @@ pub fn key_into_note_name(key: u7) -> String {
 
 const BAR_LENGTH: u32 = 1920;
 
-fn print_midi<'a>(smf: &'a midly::Smf, first_bar_duration: u32) -> Vec<String> {
+fn print_midi(smf: &midly::Smf, first_bar_duration: u32) -> Vec<String> {
     let midly::Smf {
         header: Header { format, timing },
         tracks,
