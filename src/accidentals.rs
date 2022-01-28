@@ -1,5 +1,5 @@
 use crate::{
-    abc_wrappers::{MusicSymbol, Accidental, Note},
+    abc_wrappers::{Accidental, MusicSymbol, Note},
     errors::PitchConversionError,
 };
 use abc_parser::datatypes::MusicSymbol::{
@@ -9,7 +9,7 @@ use std::{collections::HashMap, error::Error};
 
 type AccidentalMap = HashMap<(i8, Note), Accidental>;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Default, PartialEq)]
 pub struct AccidentalTracker(AccidentalMap);
 
 // Accidental tracking currently is hard-coded to work in the `octave` mode
@@ -87,7 +87,7 @@ impl AccidentalTracker {
 #[cfg(test)]
 mod tests {
     use crate::{
-        abc_wrappers::{MusicSymbol, Accidental, Note},
+        abc_wrappers::{Accidental, MusicSymbol, Note},
         accidentals::AccidentalTracker,
         errors::PitchConversionError,
     };
