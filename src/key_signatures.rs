@@ -27,17 +27,17 @@ const EIGHT_SHARPS: KeySignature = 8;
 const NINE_SHARPS: KeySignature = 9;
 const TEN_SHARPS: KeySignature = 10;
 
-const FOURTH = 5;
-const FIFTH: u16 = 7;
-const OCTAVE: u16 = 12;
+const FOURTH: u8 = 5;
+const FIFTH: u8 = 7;
+const OCTAVE: u8 = 12;
 
 use self::Enharmony::*;
 
 fn key_signature_for_root(root: u8, enharmony: Enharmony) -> i8 {
-    let signature_plus_five: i8 = ((FIFTH * root as u16 + FOURTH) % OCTAVE)
+    let signature_plus_fourth: i8 = ((FIFTH as u16 * root as u16 + FOURTH as u16) % OCTAVE as u16)
         .try_into()
         .unwrap();
-    let signature = signature_plus_five - 5;
+    let signature = signature_plus_fourth - FOURTH as i8;
     if enharmony == Natural && (signature < -1 || signature > 5) {
         panic!("{root} is a black key, enharmony can't be natural")
     }
@@ -46,10 +46,10 @@ fn key_signature_for_root(root: u8, enharmony: Enharmony) -> i8 {
     }
     if enharmony == Sharp && signature < -1 {
         // more flats than one, it's a flat black key major
-        signature + OCTAVE
+        signature + OCTAVE as i8
     } else if enharmony == Flat && signature > 5 {
         // more sharps than five, it's a sharp black key major
-        signature - OCTAVE
+        signature - OCTAVE as i8
     } else {
         signature
     }
