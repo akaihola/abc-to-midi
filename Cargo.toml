@@ -7,7 +7,7 @@ edition = "2021"
 
 [dependencies]
 abc-parser = "0.3.0"
-midly = "0.5.2"
+midly = { version = "0.5.2", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 pretty_assertions = "1.0.0"
