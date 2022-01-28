@@ -116,13 +116,11 @@ impl Track<'_> {
         }
     }
 
-    pub fn symbols_into_moments<'a, I>(
-        symbols: I,
+    pub fn symbols_into_moments<'a>(
+        symbols: impl IntoIterator<Item = &'a AbcMusicSymbol>,
         moments: &mut Vec<Moment>,
         accidental_tracker: &mut AccidentalTracker,
-    ) -> Result<()>
-    where I: IntoIterator<Item = &'a AbcMusicSymbol>,
-    {
+    ) -> Result<()> {
         let mut time = 0u32;
         for symbol in symbols {
             let visual_symbol = MusicSymbol(symbol.clone());
