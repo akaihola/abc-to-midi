@@ -26,3 +26,14 @@ impl fmt::Display for InfoFieldMissing {
 }
 
 impl Error for InfoFieldMissing {}
+
+#[derive(Debug)]
+pub struct InvalidKeySignatureAccidental(pub char);
+
+impl fmt::Display for InvalidKeySignatureAccidental {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Can't parse key signature accidental {:?}", self.0)
+    }
+}
+
+impl Error for InvalidKeySignatureAccidental {}

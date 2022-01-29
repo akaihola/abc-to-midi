@@ -4,7 +4,7 @@ use abc_parser::{
     datatypes::{MusicLine, MusicSymbol::Bar, TuneBody},
 };
 use abc_to_midi::{
-    accidentals::AccidentalTracker,
+    accidentals::{AccidentalTracker, KeySignatureMap},
     conversion::Moment,
     midly_wrappers::{Smf, Track},
 };
@@ -90,7 +90,10 @@ fn print_midi(smf: &midly::Smf, first_bar_duration: u32) -> Vec<String> {
                     format!("{:?}", kind)
                 }
             };
-            v.push(format!("{:>4} ticks {content}", format!("+{}", delta.as_int())));
+            v.push(format!(
+                "{:>4} ticks {content}",
+                format!("+{}", delta.as_int())
+            ));
             ticks += delta.as_int();
             if ticks >= BAR_LENGTH {
                 v.push(String::from("---------------------------"));
@@ -118,11 +121,8 @@ fn compare(name: &str) {
     let first_bar_duration = if let Some(TuneBody { music }) = &abc_parsed.body {
         if let Some(MusicLine { symbols }) = music.first() {
             let mut moments: Vec<Moment> = vec![];
-            let mut accidental_tracker = AccidentalTracker::new();
-            // let first_bar_symbols = symbols.iter().take_while(|&symbol| match symbol {
-            //     Bar(_) => false,
-            //     _ => true,
-            // });
+            let key_signature_map = KeySignatureMap::new();
+            let mut accidental_tracker = AccidentalTracker::new(&key_signature_map);
             let first_bar_symbols = symbols
                 .iter()
                 .take_while(|&symbol| !matches!(&symbol, Bar(_)));

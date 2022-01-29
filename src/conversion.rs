@@ -1,27 +1,25 @@
 use crate::{
-    abc_wrappers::{Accidental, MusicSymbol, Note},
-    accidentals::AccidentalTracker,
+    abc_wrappers::{DiatonicPitchClass, MaybeAccidental, MusicSymbol},
+    accidentals::{AccidentalTracker, KeySignatureMap},
     errors::{InfoFieldMissing, PitchConversionError, Result},
+    key_signatures::{key_signature, key_signature_for_major, PitchClass},
     midly_wrappers::{MidiMessage, Smf, Track},
 };
-use abc_parser::{
-    abc,
-    datatypes::{
-        Accidental::{DoubleFlat, DoubleSharp, Flat, Sharp},
-        InfoField, MusicLine as AbcMusicLine,
-        MusicSymbol::{
-            self as AbcMusicSymbol, Bar as AbcBar, Chord as AbcChord, Ending as AbcEnding,
-            GraceNotes as AbcGraceNotes, Note as AbcNote, Rest as AbcRest, Tuplet as AbcTuplet,
-            VisualBreak as AbcVisualBreak,
-        },
-        Note::{A, B, C, D, E, F, G},
-        Rest as AbcRestEnum, Tune as AbcTune, TuneBody as AbcTuneBody,
+use abc_parser::datatypes::{
+    Accidental::{DoubleFlat, DoubleSharp, Flat, Sharp},
+    InfoField, MusicLine as AbcMusicLine,
+    MusicSymbol::{
+        self as AbcMusicSymbol, Bar as AbcBar, Chord as AbcChord, Ending as AbcEnding,
+        GraceNotes as AbcGraceNotes, Note, Rest as AbcRest, Tuplet as AbcTuplet,
+        VisualBreak as AbcVisualBreak,
     },
+    Note::{A, B, C, D, E, F, G},
+    Rest as AbcRestEnum, Tune as AbcTune, TuneBody as AbcTuneBody,
 };
 use midly::{
     num::{u28, u4, u7},
     Format, Header,
-    MetaMessage::{EndOfTrack, KeySignature, Tempo, Text, TimeSignature, TrackName},
+    MetaMessage::{self, EndOfTrack, Tempo, Text, TimeSignature, TrackName},
     MidiMessage::{NoteOff, NoteOn},
     Timing, TrackEvent,
     TrackEventKind::{self, Meta},
@@ -79,8 +77,9 @@ impl Track<'_> {
         symbols: &[AbcMusicSymbol],
         events: &mut Vec<TrackEvent>,
         channel: u4,
+        key_signature: &KeySignatureMap,
     ) -> Result<()> {
-        let mut accidental_tracker = AccidentalTracker::new();
+        let mut accidental_tracker = AccidentalTracker::new(key_signature);
         let mut moments: Vec<Moment> = vec![];
         Track::symbols_into_moments(symbols, &mut moments, &mut accidental_tracker)?;
         Track::moments_into_events(moments, events, channel)
@@ -92,7 +91,7 @@ impl Track<'_> {
     ) -> Result<Sound> {
         match visual_symbol.0 {
             // Examples of notes: C ^D _E F2 G2/3
-            AbcNote {
+            Note {
                 accidental, tie, ..
             } => {
                 let played_symbol: MusicSymbol;
@@ -126,7 +125,7 @@ impl Track<'_> {
             let visual_symbol = MusicSymbol(symbol.clone());
             match visual_symbol.0 {
                 // Examples of notes: C ^D _E F2 G2/3
-                AbcNote { length, .. } => {
+                Note { length, .. } => {
                     let ticks = Self::time_into_ticks(length);
                     moments.push(Moment {
                         ticks,
@@ -272,22 +271,39 @@ impl<'a> Smf<'a> {
     }
 }
 
+// Key signature parsing (for major keys only for now):
+//                 "F#" (in ABC source)
+// 'F'                          '#'
+// DiatonicPitchClass(Note::F)  MaybeAccidental(Some(Accidental(Sharp)))
+// PitchClass(6)                false (`flat` argument for `key_signature_for_major`)
+//                 MetaMessage::KeySignature(6, minor: false)
+//                 [1, 1, 1, 1, 1, 1, 0]
+fn parse_abc_key_signature_to_midi(info_field_k: &str) -> Result<midly::MetaMessage> {
+    let note: DiatonicPitchClass = info_field_k.chars().next().unwrap().try_into()?;
+    let accidental: MaybeAccidental = info_field_k.chars().nth(1).try_into()?;
+    let flat = accidental == MaybeAccidental(Some(Flat));
+    let root_key = PitchClass::from_note_and_accidental(note, accidental);
+    let standard_key_signature = key_signature_for_major(root_key, flat);
+    Ok(standard_key_signature)
+}
+
 impl<'a> TryFrom<&'a AbcTune> for Smf<'a> {
     type Error = Box<dyn Error>;
 
     fn try_from(value: &'a AbcTune) -> Result<Self> {
         let title = Smf::get_info_field(&value.header.info, 'T', None)?;
-        let key_signature = Smf::get_info_field(&value.header.info, 'K', Some("C"))?;
+        let info_field_k = Smf::get_info_field(&value.header.info, 'K', Some("C"))?;
+        let midi_key_signature = parse_abc_key_signature_to_midi(info_field_k)?;
         let body = &value.body;
-        let smf: Smf = Smf::try_from((title, key_signature, body))?;
+        let smf: Smf = Smf::try_from((title, midi_key_signature, body))?;
         Ok(smf)
     }
 }
 
-fn get_front_matter<'a>(title: &'a str, key_signature: &str) -> Result<Vec<TrackEvent<'a>>> {
-    let key_sig_note = &Note(abc::note_uppercase(key_signature)?);
-    let key_sig_num: i8 = key_sig_note.into();
-
+fn get_front_matter<'a>(
+    title: &'a str,
+    key_signature: MetaMessage<'a>,
+) -> Result<Vec<TrackEvent<'a>>> {
     Ok(vec![
         TrackEvent {
             delta: 0.into(),
@@ -299,7 +315,7 @@ fn get_front_matter<'a>(title: &'a str, key_signature: &str) -> Result<Vec<Track
         },
         TrackEvent {
             delta: 0.into(),
-            kind: Meta(KeySignature(key_sig_num, false)),
+            kind: Meta(key_signature),
         },
         TrackEvent {
             delta: 0.into(),
@@ -312,22 +328,23 @@ fn get_front_matter<'a>(title: &'a str, key_signature: &str) -> Result<Vec<Track
     ])
 }
 
-impl<'a> TryFrom<(&'a str, &'a str, &Option<AbcTuneBody>)> for Smf<'a> {
+impl<'a> TryFrom<(&'a str, MetaMessage<'a>, &Option<AbcTuneBody>)> for Smf<'a> {
     type Error = Box<dyn Error>;
 
-    fn try_from(value: (&'a str, &'a str, &Option<AbcTuneBody>)) -> Result<Self> {
-        let (title, key_signature, maybe_music) = value;
+    fn try_from(value: (&'a str, MetaMessage<'a>, &Option<AbcTuneBody>)) -> Result<Self> {
+        let (title, midi_key_signature, maybe_music) = value;
+        let key_signature_map = key_signature(midi_key_signature)?;
         let mut smf: Smf = Smf::new(Header::new(
             Format::SingleTrack,
             Timing::Metrical(480.into()),
         ));
-        let mut first_track = get_front_matter(title, key_signature)?;
+        let mut first_track = get_front_matter(title, midi_key_signature)?;
         let mut other_tracks: Vec<Vec<TrackEvent>> = vec![];
         if let Some(AbcTuneBody { music }) = maybe_music {
             let mut tracks: Vec<Vec<TrackEvent>> = music
                 .iter()
                 .map(|music_line| {
-                    let line_with_info = (title, key_signature, music_line);
+                    let line_with_info = (title, &key_signature_map, music_line);
                     let Track(track) = line_with_info.try_into().unwrap();
                     track
                 })
@@ -345,14 +362,15 @@ impl<'a> TryFrom<(&'a str, &'a str, &Option<AbcTuneBody>)> for Smf<'a> {
     }
 }
 
-impl<'a> TryFrom<(&str, &str, &AbcMusicLine)> for Track<'a> {
+impl<'a> TryFrom<(&str, &KeySignatureMap, &AbcMusicLine)> for Track<'a> {
     type Error = Box<dyn Error>;
 
     /// Converts an ABC line of music to a track of MIDI events
-    fn try_from(value: (&str, &str, &AbcMusicLine)) -> Result<Self> {
+    fn try_from(value: (&str, &KeySignatureMap, &AbcMusicLine)) -> Result<Self> {
+        let (_title, key_signature_map, music_line) = value;
         let mut events: Vec<TrackEvent> = vec![];
         let channel = u4::from(0);
-        Self::symbols_into_events(&value.2.symbols, &mut events, channel)?;
+        Self::symbols_into_events(&music_line.symbols, &mut events, channel, key_signature_map)?;
         Ok(Track(events))
     }
 }
@@ -368,8 +386,8 @@ impl TryFrom<MusicSymbol> for u7 {
                 octave,
                 ..
             } => {
-                let n: i8 = (&Note(note)).into();
-                let a: i8 = Accidental(accidental).into();
+                let n: i8 = (&DiatonicPitchClass(note)).into();
+                let a: i8 = MaybeAccidental(accidental).into();
                 let midi_note: u8 = (12 * (octave + 4) + n + a).try_into()?;
                 Ok(midi_note.into())
             }
@@ -389,8 +407,8 @@ impl TryFrom<MusicSymbol> for MidiMessage {
     }
 }
 
-impl From<&Note> for i8 {
-    fn from(note: &Note) -> Self {
+impl From<&DiatonicPitchClass> for i8 {
+    fn from(note: &DiatonicPitchClass) -> Self {
         match note.0 {
             C => 0,
             D => 2,
@@ -403,8 +421,8 @@ impl From<&Note> for i8 {
     }
 }
 
-impl From<Accidental> for i8 {
-    fn from(accidental: Accidental) -> Self {
+impl From<MaybeAccidental> for i8 {
+    fn from(accidental: MaybeAccidental) -> Self {
         match accidental.0 {
             Some(DoubleFlat) => -2,
             Some(Flat) => -1,
@@ -418,14 +436,15 @@ impl From<Accidental> for i8 {
 #[cfg(test)]
 mod tests {
     use crate::{
-        abc_wrappers::{Accidental, MusicSymbol, Note},
+        abc_wrappers::{DiatonicPitchClass, MaybeAccidental, MusicSymbol},
+        accidentals::KeySignatureMap,
         midly_wrappers::{MidiMessage, Track},
     };
     use abc_parser::{
         abc,
         datatypes::{
             Accidental::{self as AbcAccidental, DoubleFlat, DoubleSharp, Flat, Natural, Sharp},
-            MusicSymbol::{self as AbcMusicSymbol, Note as AbcNote},
+            MusicSymbol::{self as AbcMusicSymbol, Note},
             Note::{self as AbcNoteName, A, B, C, D, E, F, G},
         },
     };
@@ -476,8 +495,8 @@ mod tests {
     fn music_line_try_into_track(music: &str, expect_deltas: &[u32], expect_notes: &[i8]) {
         let music_line = abc::music_line(music).unwrap();
         let title = "title";
-        let key_signature = "C";
-        let track = (title, key_signature, &music_line).try_into().unwrap();
+        let key_signature_map = KeySignatureMap::new();
+        let track = (title, &key_signature_map, &music_line).try_into().unwrap();
         assert_eq!(deltas(&track), expect_deltas);
         assert_eq!(note_ons_and_offs(&track), expect_notes);
     }
@@ -489,7 +508,8 @@ mod tests {
             AbcMusicSymbol::new_note(vec![], None, C, 1, 1.0, None),
         ];
         let mut events = vec![];
-        Track::symbols_into_events(symbols, &mut events, 1.into()).unwrap();
+        let key_signature_map = KeySignatureMap::new();
+        Track::symbols_into_events(symbols, &mut events, 1.into(), &key_signature_map).unwrap();
         let pitches: Vec<i8> = events.iter().filter_map(extract_note_on).collect();
         assert_eq!(pitches, &[61, 61]);
     }
@@ -498,15 +518,15 @@ mod tests {
         abc_symbol,
         expect,
         case(
-            AbcNote { note: C, accidental: None, octave: -4, decorations: vec![], length: 1.0, tie: None },
+            Note { note: C, accidental: None, octave: -4, decorations: vec![], length: 1.0, tie: None },
             0,
         ),
         case(
-            AbcNote { note: F, accidental: Some(DoubleSharp), octave: 6, decorations: vec![], length: 1.0, tie: None },
+            Note { note: F, accidental: Some(DoubleSharp), octave: 6, decorations: vec![], length: 1.0, tie: None },
             127,
         ),
         case(
-            AbcNote { note: D, accidental: Some(DoubleFlat), octave: -1, decorations: vec![], length: 1.0, tie: None },
+            Note { note: D, accidental: Some(DoubleFlat), octave: -1, decorations: vec![], length: 1.0, tie: None },
             36,
         ),
     )]
@@ -519,15 +539,15 @@ mod tests {
         abc_symbol,
         expect,
         case(
-            AbcNote { note: C, accidental: None, octave: 1, decorations: vec![], length: 1.0, tie: None },
+            Note { note: C, accidental: None, octave: 1, decorations: vec![], length: 1.0, tie: None },
             NoteOn { key: 60.into(), vel: 80.into() },
         ),
         case(
-            AbcNote { note: B, accidental: Some(Sharp), octave: 0, decorations: vec![], length: 1.0, tie: None },
+            Note { note: B, accidental: Some(Sharp), octave: 0, decorations: vec![], length: 1.0, tie: None },
             NoteOn { key: 60.into(), vel: 80.into() },
         ),
         case(
-            AbcNote { note: D, accidental: Some(DoubleFlat), octave: -1, decorations: vec![], length: 1.0, tie: None },
+            Note { note: D, accidental: Some(DoubleFlat), octave: -1, decorations: vec![], length: 1.0, tie: None },
             NoteOn { key: 36.into(), vel: 80.into() },
         ),
     )]
@@ -548,7 +568,7 @@ mod tests {
         case(B, 11)
     )]
     fn note_into_i8(note_name: AbcNoteName, expect: i8) {
-        let note = &Note(note_name);
+        let note = &DiatonicPitchClass(note_name);
         let pitch: i8 = note.into();
         assert_eq!(pitch, expect);
     }
@@ -563,7 +583,7 @@ mod tests {
         case(Some(DoubleFlat), -2),
     )]
     fn accidental_into_i8(abc_accidental: Option<AbcAccidental>, expect: i8) {
-        let accidental = Accidental(abc_accidental);
+        let accidental = MaybeAccidental(abc_accidental);
         let semitones: i8 = accidental.into();
         assert_eq!(semitones, expect);
     }
