@@ -1,9 +1,10 @@
-use crate::errors::{InvalidKeySignatureAccidental, PitchConversionError, Result};
+use crate::errors::AbcParseError;
 use abc_parser::datatypes::{
     Accidental::{self as AbcAccidental, Flat, Sharp},
     MusicSymbol as AbcMusicSymbol, Note,
 };
-use std::{error::Error, hash::Hash};
+use anyhow::{bail, Error, Result};
+use std::hash::Hash;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct MusicSymbol(pub AbcMusicSymbol);
@@ -34,21 +35,30 @@ impl MusicSymbol {
     pub fn octave(&self) -> Result<i8> {
         match self.0 {
             AbcMusicSymbol::Note { octave, .. } => Ok(octave),
-            _ => Err(Box::new(PitchConversionError)),
+            _ => bail!(
+                "Can't get the octave of {:?}, expected an abc_parser::MusicSymbol::Note",
+                self.0
+            ),
         }
     }
 
-    pub fn note(&self) -> Result<DiatonicPitchClass> {
+    pub fn diatonic_pitch_class(&self) -> Result<DiatonicPitchClass> {
         match self.0 {
             AbcMusicSymbol::Note { note, .. } => Ok(DiatonicPitchClass(note)),
-            _ => Err(Box::new(PitchConversionError)),
+            _ => bail!(
+                "Can't get the diatonic pitch class of {:?}, expected an abc_parser::MusicSymbol::Note",
+                self.0
+            ),
         }
     }
 
     pub fn accidental(&self) -> Result<MaybeAccidental> {
         match self.0 {
             AbcMusicSymbol::Note { accidental, .. } => Ok(MaybeAccidental(accidental)),
-            _ => Err(Box::new(PitchConversionError)),
+            _ => bail!(
+                "Can't get the accidental of {:?}, expected an abc_parser::MusicSymbol::Note",
+                self.0
+            ),
         }
     }
 }
@@ -72,7 +82,7 @@ impl Hash for DiatonicPitchClass {
 }
 
 impl TryFrom<char> for DiatonicPitchClass {
-    type Error = Box<dyn Error>;
+    type Error = Error;
 
     /// Converts a pitch name to a `Note` object
     fn try_from(value: char) -> Result<Self> {
@@ -84,13 +94,13 @@ impl TryFrom<char> for DiatonicPitchClass {
             'G' => Ok(Self(Note::G)),
             'A' => Ok(Self(Note::A)),
             'B' => Ok(Self(Note::B)),
-            _ => Err(Box::new(PitchConversionError)),
+            _ => Err(AbcParseError::InvalidNoteName(value).into()),
         }
     }
 }
 
 impl TryFrom<usize> for DiatonicPitchClass {
-    type Error = Box<dyn Error>;
+    type Error = Error;
 
     fn try_from(value: usize) -> Result<Self> {
         match value {
@@ -101,7 +111,7 @@ impl TryFrom<usize> for DiatonicPitchClass {
             4 => Ok(Self(Note::G)),
             5 => Ok(Self(Note::A)),
             6 => Ok(Self(Note::B)),
-            _ => Err(Box::new(PitchConversionError)),
+            _ => Err(AbcParseError::InvalidDiatonicPitchClass(value).into()),
         }
     }
 }
@@ -116,14 +126,14 @@ impl From<MaybeAccidental> for Option<AbcAccidental> {
 }
 
 impl TryFrom<Option<char>> for MaybeAccidental {
-    type Error = Box<dyn Error>;
+    type Error = Error;
 
     fn try_from(value: Option<char>) -> Result<Self> {
         match value {
             Some('#') => Ok(Self(Some(Sharp))),
             Some('b') => Ok(Self(Some(Flat))),
             None => Ok(Self(None)),
-            Some(c) => Err(Box::new(InvalidKeySignatureAccidental(c))),
+            Some(c) => Err(AbcParseError::InvalidKeySignatureAccidental(c).into()),
         }
     }
 }

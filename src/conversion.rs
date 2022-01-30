@@ -1,8 +1,9 @@
 use crate::{
     abc_wrappers::{DiatonicPitchClass, MaybeAccidental, MusicSymbol},
     accidentals::{AccidentalTracker, KeySignatureMap},
-    errors::{InfoFieldMissing, PitchConversionError, Result},
-    key_signatures::{key_signature, key_signature_for_major, PitchClass},
+    errors::AbcParseError,
+    grammar::{abc_key_signature, KeySignatureSymbol},
+    key_signatures::{get_signature_for_diatonic_key, key_signature, PitchClass},
     midly_wrappers::{MidiMessage, Smf, Track},
 };
 use abc_parser::datatypes::{
@@ -16,6 +17,7 @@ use abc_parser::datatypes::{
     Note::{A, B, C, D, E, F, G},
     Rest as AbcRestEnum, Tune as AbcTune, TuneBody as AbcTuneBody,
 };
+use anyhow::{bail, Error, Result};
 use midly::{
     num::{u28, u4, u7},
     Format, Header,
@@ -24,7 +26,6 @@ use midly::{
     Timing, TrackEvent,
     TrackEventKind::{self, Meta},
 };
-use std::error::Error;
 
 struct MomentNote {
     key: u7,
@@ -85,6 +86,8 @@ impl Track<'_> {
         Track::moments_into_events(moments, events, channel)
     }
 
+    /// Converts an ABC visual note or rest into a performed musical symbol (note, chord or rest).
+    /// It is an error to attempt converting other visual symbols like barlines or text.
     fn interpret_symbol(
         visual_symbol: MusicSymbol,
         accidental_tracker: &mut AccidentalTracker,
@@ -111,7 +114,10 @@ impl Track<'_> {
                 }))
             }
             AbcRest { .. } => Ok(Sound::Rest),
-            _ => Err(Box::new(PitchConversionError)),
+            _ => bail!(
+                "Can't interpret {:#?} as a musical performance event. Expected a note or a rest.",
+                visual_symbol
+            ),
         }
     }
 
@@ -265,30 +271,40 @@ impl<'a> Smf<'a> {
             Some(InfoField(_char, string)) => Ok(string),
             None => match default {
                 Some(s) => Ok(s),
-                None => Err(Box::new(InfoFieldMissing(c))),
+                None => Err(AbcParseError::InfoFieldMissing(c).into()),
             },
         }
     }
 }
 
 // Key signature parsing (for major keys only for now):
-//                 "F#" (in ABC source)
-// 'F'                          '#'
-// DiatonicPitchClass(Note::F)  MaybeAccidental(Some(Accidental(Sharp)))
-// PitchClass(6)                false (`flat` argument for `key_signature_for_major`)
-//                 MetaMessage::KeySignature(6, minor: false)
-//                 [1, 1, 1, 1, 1, 1, 0]
+//                          "F#m" (in ABC source)
+// KeySignatureSymbol {               |
+//     note: Note::F,                 v
+//     accidental: Some(Accidental::Sharp),
+//     minor: true,                   |
+// }                                  |
+// PitchClass {                       v
+//     DiatonicPitchClass(Note::F)  MaybeAccidental(Some(Accidental::Sharp))
+// }                                  |
+// midly::MetaMessage::KeySignature(  v
+//     6,     // root
+//     true, // minor
+// )
 fn parse_abc_key_signature_to_midi(info_field_k: &str) -> Result<midly::MetaMessage> {
-    let note: DiatonicPitchClass = info_field_k.chars().next().unwrap().try_into()?;
-    let accidental: MaybeAccidental = info_field_k.chars().nth(1).try_into()?;
-    let flat = accidental == MaybeAccidental(Some(Flat));
-    let root_key = PitchClass::from_note_and_accidental(note, accidental);
-    let standard_key_signature = key_signature_for_major(root_key, flat);
+    let KeySignatureSymbol {
+        note,
+        accidental,
+        minor,
+    } = abc_key_signature::key_signature(info_field_k)?;
+    let root_key = PitchClass::from_note_and_accidental(DiatonicPitchClass(note), accidental);
+    let standard_key_signature =
+        get_signature_for_diatonic_key(root_key, Some(Flat) == accidental, minor);
     Ok(standard_key_signature)
 }
 
 impl<'a> TryFrom<&'a AbcTune> for Smf<'a> {
-    type Error = Box<dyn Error>;
+    type Error = Error;
 
     fn try_from(value: &'a AbcTune) -> Result<Self> {
         let title = Smf::get_info_field(&value.header.info, 'T', None)?;
@@ -329,7 +345,7 @@ fn get_front_matter<'a>(
 }
 
 impl<'a> TryFrom<(&'a str, MetaMessage<'a>, &Option<AbcTuneBody>)> for Smf<'a> {
-    type Error = Box<dyn Error>;
+    type Error = Error;
 
     fn try_from(value: (&'a str, MetaMessage<'a>, &Option<AbcTuneBody>)) -> Result<Self> {
         let (title, midi_key_signature, maybe_music) = value;
@@ -363,7 +379,7 @@ impl<'a> TryFrom<(&'a str, MetaMessage<'a>, &Option<AbcTuneBody>)> for Smf<'a> {
 }
 
 impl<'a> TryFrom<(&str, &KeySignatureMap, &AbcMusicLine)> for Track<'a> {
-    type Error = Box<dyn Error>;
+    type Error = Error;
 
     /// Converts an ABC line of music to a track of MIDI events
     fn try_from(value: (&str, &KeySignatureMap, &AbcMusicLine)) -> Result<Self> {
@@ -376,7 +392,7 @@ impl<'a> TryFrom<(&str, &KeySignatureMap, &AbcMusicLine)> for Track<'a> {
 }
 
 impl TryFrom<MusicSymbol> for u7 {
-    type Error = Box<dyn Error>;
+    type Error = Error;
 
     fn try_from(value: MusicSymbol) -> Result<Self> {
         match value.0 {
@@ -391,13 +407,16 @@ impl TryFrom<MusicSymbol> for u7 {
                 let midi_note: u8 = (12 * (octave + 4) + n + a).try_into()?;
                 Ok(midi_note.into())
             }
-            _ => Err(Box::new(PitchConversionError)),
+            _ => bail!(
+                "Can't get pitch from {:?}, expected an abc_parser::MusicSymbol::Note",
+                value
+            ),
         }
     }
 }
 
 impl TryFrom<MusicSymbol> for MidiMessage {
-    type Error = Box<dyn Error>;
+    type Error = Error;
 
     fn try_from(value: MusicSymbol) -> Result<Self> {
         Ok(MidiMessage(NoteOn {
@@ -435,6 +454,7 @@ impl From<MaybeAccidental> for i8 {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::{
         abc_wrappers::{DiatonicPitchClass, MaybeAccidental, MusicSymbol},
         accidentals::KeySignatureMap,
@@ -448,7 +468,7 @@ mod tests {
             Note::{self as AbcNoteName, A, B, C, D, E, F, G},
         },
     };
-    use midly::{num::u7, MidiMessage::NoteOn, TrackEvent, TrackEventKind::Midi};
+    use midly::{num::u7, MetaMessage, MidiMessage::NoteOn, TrackEvent, TrackEventKind::Midi};
     use pretty_assertions::assert_eq;
     use rstest::rstest;
 
@@ -586,5 +606,19 @@ mod tests {
         let accidental = MaybeAccidental(abc_accidental);
         let semitones: i8 = accidental.into();
         assert_eq!(semitones, expect);
+    }
+
+    #[rstest(
+        info_field_k,
+        expect,
+        case::c("C", MetaMessage::KeySignature(0, false)),
+        case::cm("Cmin", MetaMessage::KeySignature(-3, true)),
+        case::cs("C#", MetaMessage::KeySignature(7, false)),
+        case::csm("C#min", MetaMessage::KeySignature(4, true)),
+        case::csm("Gmin", MetaMessage::KeySignature(-2, true))
+    )]
+    fn test_parse_abc_key_signature_to_midi(info_field_k: &str, expect: MetaMessage) {
+        let result = parse_abc_key_signature_to_midi(info_field_k).unwrap();
+        assert_eq!(result, expect);
     }
 }

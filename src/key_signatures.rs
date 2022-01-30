@@ -1,12 +1,13 @@
 use crate::{
-    abc_wrappers::{DiatonicPitchClass, MaybeAccidental},
+    abc_wrappers::{DiatonicPitchClass},
     accidentals::KeySignatureMap,
-    errors::{PitchConversionError, Result},
+    errors::AbcParseError,
 };
 use abc_parser::datatypes::{
-    Accidental::{DoubleFlat, DoubleSharp, Flat, Sharp},
+    Accidental::{self, DoubleFlat, DoubleSharp, Flat, Sharp},
     Note::{A, B, C, D, E, F, G},
 };
+use anyhow::Result;
 use derive_more::Into;
 use midly::MetaMessage;
 use num_traits::PrimInt;
@@ -35,7 +36,10 @@ fn accidentals_table(meta_message: MetaMessage) -> Result<KeySignatureTable> {
         }
         Ok(result)
     } else {
-        Err(Box::new(PitchConversionError))
+        Err(
+            AbcParseError::WrongMidiMetaMessageKind(format!("{meta_message:#?}"), "KeySignature")
+                .into(),
+        )
     }
 }
 
@@ -150,7 +154,10 @@ impl<T: PrimInt> Add<T> for PitchClass {
 impl PitchClass {
     /// Converts a `(abc_wrappers::Note, abc_wrappers::MaybeAccidental)` tuple
     /// into a `PitchClass` struct
-    pub fn from_note_and_accidental(note: DiatonicPitchClass, accidental: MaybeAccidental) -> Self {
+    pub fn from_note_and_accidental(
+        note: DiatonicPitchClass,
+        accidental: Option<Accidental>,
+    ) -> Self {
         let natural = match note {
             DiatonicPitchClass(C) => PitchClass::C,
             DiatonicPitchClass(D) => PitchClass::D,
@@ -161,10 +168,10 @@ impl PitchClass {
             DiatonicPitchClass(B) => PitchClass::B,
         };
         let accidental_adjust = match accidental {
-            MaybeAccidental(Some(DoubleSharp)) => 2,
-            MaybeAccidental(Some(Sharp)) => 1,
-            MaybeAccidental(Some(Flat)) => -1,
-            MaybeAccidental(Some(DoubleFlat)) => -2,
+            Some(DoubleSharp) => 2,
+            Some(Sharp) => 1,
+            Some(Flat) => -1,
+            Some(DoubleFlat) => -2,
             _ => 0,
         };
         natural + accidental_adjust
@@ -190,14 +197,21 @@ impl PitchClass {
 /// Returns the number of sharps (>0) or flats (<0) in the major key for the given
 /// pitch class (C, C#, D, ...). For black-key majors, `flat==true` will force the
 /// enharmonic flat root key to be used insted of the sharp one.
-pub fn key_signature_for_major(root_key: PitchClass, flat: bool) -> MetaMessage<'static> {
+pub fn get_signature_for_diatonic_key(
+    root_key: PitchClass,
+    flat: bool,
+    minor: bool,
+) -> MetaMessage<'static> {
     if root_key.is_natural() && flat {
         panic!("{root_key:#?} is a white key, can't make it flat")
     }
-    let signature = ((root_key.on_fifth_circle() + 1) % 12) as i8 - 1;
-    let minor = false;
+    let offset: i8 = if minor { 3 } else { 0 };
+    let circle = root_key.on_fifth_circle() as i8 - offset;
+    let center = 1 + offset;
+    let signature = rem_euclid(circle + center, 12) - center;
     midly::MetaMessage::KeySignature(
         if flat && signature > 5 {
+            // TODO: adjust this for minors
             // more sharps than five, turn sharp black key major into flat
             signature - 12
         } else {
@@ -210,25 +224,12 @@ pub fn key_signature_for_major(root_key: PitchClass, flat: bool) -> MetaMessage<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use abc_parser::datatypes::{
+        Accidental::{Flat, Sharp},
+        Note::{self, A, B, C, D, E, F, G},
+    };
+    use midly::MetaMessage::KeySignature;
     use rstest::rstest;
-
-    const SIX_FLATS: MetaMessage = MetaMessage::KeySignature(-6, false);
-    const FIVE_FLATS: MetaMessage = MetaMessage::KeySignature(-5, false);
-    const FOUR_FLATS: MetaMessage = MetaMessage::KeySignature(-4, false);
-    const THREE_FLATS: MetaMessage = MetaMessage::KeySignature(-3, false);
-    const TWO_FLATS: MetaMessage = MetaMessage::KeySignature(-2, false);
-    const ONE_FLAT: MetaMessage = MetaMessage::KeySignature(-1, false);
-    const ZERO_SHARPS: MetaMessage = MetaMessage::KeySignature(0, false);
-    const ONE_SHARP: MetaMessage = MetaMessage::KeySignature(1, false);
-    const TWO_SHARPS: MetaMessage = MetaMessage::KeySignature(2, false);
-    const THREE_SHARPS: MetaMessage = MetaMessage::KeySignature(3, false);
-    const FOUR_SHARPS: MetaMessage = MetaMessage::KeySignature(4, false);
-    const FIVE_SHARPS: MetaMessage = MetaMessage::KeySignature(5, false);
-    const SIX_SHARPS: MetaMessage = MetaMessage::KeySignature(6, false);
-    const SEVEN_SHARPS: MetaMessage = MetaMessage::KeySignature(7, false);
-    const EIGHT_SHARPS: MetaMessage = MetaMessage::KeySignature(8, false);
-    const NINE_SHARPS: MetaMessage = MetaMessage::KeySignature(9, false);
-    const TEN_SHARPS: MetaMessage = MetaMessage::KeySignature(10, false);
 
     impl PitchClass {
         // Pitches only used in tests
@@ -239,36 +240,58 @@ mod tests {
         const BF: Self = Self(10);
     }
     #[rstest(
-        root, flat, expect,
-        case::c(0, false, ZERO_SHARPS),
-        case::cs(1, false, SEVEN_SHARPS),
-        case::df(1, true, FIVE_FLATS),
-        case::d(2, false, TWO_SHARPS),
-        case::ds(3, false, NINE_SHARPS),
-        case::ef(3, true, THREE_FLATS),
-        case::e(4, false, FOUR_SHARPS),
-        case::f(5, false, ONE_FLAT),
-        case::fs(6, false, SIX_SHARPS),
-        case::gf(6, true, SIX_FLATS),
-        case::g(7, false, ONE_SHARP),
-        case::gs(8, false, EIGHT_SHARPS),
-        case::af(8, true, FOUR_FLATS),
-        case::a(9, false, THREE_SHARPS),
-        case::as_(10, false, TEN_SHARPS),
-        case::bf(10, true, TWO_FLATS),
-        case::b(11, false, FIVE_SHARPS),
-        case::c2(12, false, ZERO_SHARPS),
-        case::df3(25, true, FIVE_FLATS),
-        case::d4(38, false, TWO_SHARPS),
-        case::ef5(51, true, THREE_FLATS),
-        case::e6(64, false, FOUR_SHARPS),
-        case::f7(77, false, ONE_FLAT),
-        case::fs8(90, false, SIX_SHARPS),
-        case::g9(103, false, ONE_SHARP),
-        case::af10(116, true, FOUR_FLATS)
-THREE_SHARPS)]
-    fn key_signature(root: u16, flat: bool, expect: MetaMessage) {
-        let result = key_signature_for_major(PitchClass::from(root), flat);
+        root, flat, minor, expect,
+        case::c(0, false, false, KeySignature(0, false)),
+        case::cs(1, false, false, KeySignature(7, false)),
+        case::df(1, true, false, KeySignature(-5, false)),
+        case::d(2, false, false, KeySignature(2, false)),
+        case::ef(3, true, false, KeySignature(-3, false)),
+        case::e(4, false, false, KeySignature(4, false)),
+        case::f(5, false, false, KeySignature(-1, false)),
+        case::fs(6, false, false, KeySignature(6, false)),
+        case::gf(6, true, false, KeySignature(-6, false)),
+        case::g(7, false, false, KeySignature(1, false)),
+        case::af(8, true, false, KeySignature(-4, false)),
+        case::a(9, false, false, KeySignature(3, false)),
+        case::bf(10, true, false, KeySignature(-2, false)),
+        case::b(11, false, false, KeySignature(5, false)),
+        case::c2(12, false, false, KeySignature(0, false)),
+        case::df3(25, true, false, KeySignature(-5, false)),
+        case::d4(38, false, false, KeySignature(2, false)),
+        case::ef5(51, true, false, KeySignature(-3, false)),
+        case::e6(64, false, false, KeySignature(4, false)),
+        case::f7(77, false, false, KeySignature(-1, false)),
+        case::fs8(90, false, false, KeySignature(6, false)),
+        case::g9(103, false, false, KeySignature(1, false)),
+        case::af10(116, true, false, KeySignature(-4, false)),
+        case::cm(0, false, true, KeySignature(-3, true)),
+        case::csm(1, false, true, KeySignature(4, true)),
+        case::dm(2, false, true, KeySignature(-1, true)),
+        case::dsm(3, false, true, KeySignature(6, true)),
+        case::efm(3, true, true, KeySignature(-6, true)),
+        case::em(4, false, true, KeySignature(1, true)),
+        case::fm(5, false, true, KeySignature(-4, true)),
+        case::fsm(6, false, true, KeySignature(3, true)),
+        case::gm(7, false, true, KeySignature(-2, true)),
+        case::gsm(8, false, true, KeySignature(5, true)),
+        case::am(9, false, true, KeySignature(0, true)),
+        case::bfm(10, true, true, KeySignature(-5, true)),
+        case::bm(11, false, true, KeySignature(2, true)),
+        case::cm2(12, false, true, KeySignature(-3, true)),
+        case::dm4(38, false, true, KeySignature(-1, true)),
+        case::efm5(51, true, true, KeySignature(-6, true)),
+        case::em6(64, false, true, KeySignature(1, true)),
+        case::fm7(77, false, true, KeySignature(-4, true)),
+        case::fsm8(90, false, true, KeySignature(3, true)),
+        case::gm9(103, false, true, KeySignature(-2, true)),
+)]
+    fn test_get_signature_for_diatonic_key(
+        root: u16,
+        flat: bool,
+        minor: bool,
+        expect: MetaMessage,
+    ) {
+        let result = get_signature_for_diatonic_key(PitchClass::from(root), flat, minor);
         assert_eq!(result, expect);
     }
 
@@ -336,5 +359,42 @@ THREE_SHARPS)]
     fn pitch_class_on_fifth_circle(pitch_class: PitchClass, expect: u8) {
         let result = pitch_class.on_fifth_circle();
         assert_eq!(result, expect);
+    }
+
+    #[rstest(
+        note,
+        accidental,
+        expect,
+        case::cf(C, Some(Flat), 11),
+        case::c(C, None, 0),
+        case::c(C, Some(Sharp), 1),
+        case::df(D, Some(Flat), 1),
+        case::d(D, None, 2),
+        case::d(D, Some(Sharp), 3),
+        case::ef(E, Some(Flat), 3),
+        case::e(E, None, 4),
+        case::e(E, Some(Sharp), 5),
+        case::ff(F, Some(Flat), 4),
+        case::f(F, None, 5),
+        case::f(F, Some(Sharp), 6),
+        case::gf(G, Some(Flat), 6),
+        case::g(G, None, 7),
+        case::g(G, Some(Sharp), 8),
+        case::af(A, Some(Flat), 8),
+        case::a(A, None, 9),
+        case::a(A, Some(Sharp), 10),
+        case::bf(B, Some(Flat), 10),
+        case::b(B, None, 11),
+        case::b(B, Some(Sharp), 0)
+    )]
+    fn test_pitch_class_from_note_and_accidental(
+        note: Note,
+        accidental: Option<Accidental>,
+        expect: u8,
+    ) {
+        let diatonic_pitch_class = DiatonicPitchClass(note);
+        let PitchClass(root) =
+            PitchClass::from_note_and_accidental(diatonic_pitch_class, accidental);
+        assert_eq!(root, expect);
     }
 }

@@ -1,39 +1,15 @@
-use std::{
-    error::{self, Error},
-    fmt,
-};
+use thiserror::Error;
 
-pub type Result<T> = std::result::Result<T, Box<dyn error::Error>>;
-
-#[derive(Debug)]
-pub struct PitchConversionError;
-
-impl fmt::Display for PitchConversionError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Can't convert this type to a note")
-    }
+#[derive(Debug, Error, PartialEq)]
+pub enum AbcParseError {
+    #[error("Note name {0} is invalid")]
+    InvalidNoteName(char),
+    #[error("Note name {0} is invalid")]
+    InvalidDiatonicPitchClass(usize),
+    #[error("Diatonic pitch class {0} is invalid, expected 0..=6")]
+    InfoFieldMissing(char),
+    #[error("Invalid accidental {0} in key signature")]
+    InvalidKeySignatureAccidental(char),
+    #[error("Invalid meta message kind {0}, expected {1}")]
+    WrongMidiMetaMessageKind(String, &'static str),
 }
-
-impl Error for PitchConversionError {}
-
-#[derive(Debug)]
-pub struct InfoFieldMissing(pub char);
-
-impl fmt::Display for InfoFieldMissing {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "The info field {}: is missing", self.0)
-    }
-}
-
-impl Error for InfoFieldMissing {}
-
-#[derive(Debug)]
-pub struct InvalidKeySignatureAccidental(pub char);
-
-impl fmt::Display for InvalidKeySignatureAccidental {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Can't parse key signature accidental {:?}", self.0)
-    }
-}
-
-impl Error for InvalidKeySignatureAccidental {}

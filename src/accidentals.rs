@@ -1,11 +1,9 @@
-use crate::{
-    abc_wrappers::{DiatonicPitchClass, MaybeAccidental, MusicSymbol},
-    errors::{PitchConversionError, Result},
-};
+use crate::abc_wrappers::{DiatonicPitchClass, MaybeAccidental, MusicSymbol};
 use abc_parser::datatypes::{
     Accidental,
     MusicSymbol::{self as AbcMusicSymbol, Chord as AbcChord, GraceNotes as AbcGraceNotes, Note},
 };
+use anyhow::{bail, Result};
 use std::collections::HashMap;
 
 // Need to use `abc_wrappers::Note` since `abc_parser::datatypes::Note` is not hashable
@@ -35,7 +33,7 @@ impl<'a> AccidentalTracker<'a> {
     pub fn insert(&mut self, symbol: &MusicSymbol) -> Result<()> {
         if let Ok(MaybeAccidental(Some(v))) = symbol.accidental() {
             self.accidental_map
-                .insert((symbol.octave()?, symbol.note()?), v);
+                .insert((symbol.octave()?, symbol.diatonic_pitch_class()?), v);
         }
         Ok(())
     }
@@ -97,7 +95,7 @@ impl<'a> AccidentalTracker<'a> {
                     .map(|note| self.apply(&MusicSymbol(note.clone())).unwrap().0)
                     .collect(),
             })),
-            _ => Err(Box::new(PitchConversionError)),
+            _ => bail!("Can't apply accidentals to {:?}, expected an abc_parser::MusicSymbol::Note, ::Chord or ::GraceNotes", symbol.0),
         }
     }
 
@@ -112,7 +110,6 @@ mod tests {
     use crate::{
         abc_wrappers::{DiatonicPitchClass, MaybeAccidental, MusicSymbol},
         accidentals::AccidentalTracker,
-        errors::PitchConversionError,
     };
     use abc_parser::datatypes::{
         Accidental::{self as Accidental, DoubleFlat, DoubleSharp, Flat, Natural, Sharp},
@@ -228,8 +225,10 @@ mod tests {
     fn apply_non_note(symbol: MusicSymbol) {
         let keysigmap = KeySignatureMap::new();
         let tracker = AccidentalTracker::new(&keysigmap);
-        let error = tracker.apply(&symbol).err().unwrap();
-        assert!(error.is::<PitchConversionError>());
+        let error: anyhow::Error = tracker.apply(&symbol).unwrap_err();
+        assert!(matches!(error, anyhow::Error { .. }));
+        let expect_message = format!("Can't apply accidentals to {:?}, expected an abc_parser::MusicSymbol::Note, ::Chord or ::GraceNotes", symbol.0);
+        assert_eq!(format!("{error:?}"), expect_message);
     }
 
     #[test]
