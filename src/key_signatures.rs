@@ -1,7 +1,8 @@
 use crate::{
-    abc_wrappers::{DiatonicPitchClass},
+    abc_wrappers::DiatonicPitchClass,
     accidentals::KeySignatureMap,
     errors::AbcParseError,
+    grammar::{abc_key_signature, KeySignatureSymbol},
 };
 use abc_parser::datatypes::{
     Accidental::{self, DoubleFlat, DoubleSharp, Flat, Sharp},
@@ -17,6 +18,32 @@ use std::{
 };
 
 pub type KeySignatureTable = [i8; 7];
+
+// Key signature parsing (for major keys only for now):
+//                          "F#m" (in ABC source)
+// KeySignatureSymbol {               |
+//     note: Note::F,                 v
+//     accidental: Some(Accidental::Sharp),
+//     minor: true,                   |
+// }                                  |
+// PitchClass {                       v
+//     DiatonicPitchClass(Note::F)  MaybeAccidental(Some(Accidental::Sharp))
+// }                                  |
+// midly::MetaMessage::KeySignature(  v
+//     6,     // root
+//     true, // minor
+// )
+pub fn parse_abc_key_signature_to_midi(info_field_k: &str) -> Result<midly::MetaMessage> {
+    let KeySignatureSymbol {
+        note,
+        accidental,
+        minor,
+    } = abc_key_signature::key_signature(info_field_k)?;
+    let root_key = PitchClass::from_note_and_accidental(DiatonicPitchClass(note), accidental);
+    let standard_key_signature =
+        get_signature_for_diatonic_key(root_key, Some(Flat) == accidental, minor);
+    Ok(standard_key_signature)
+}
 
 fn accidentals_table(meta_message: MetaMessage) -> Result<KeySignatureTable> {
     if let MetaMessage::KeySignature(num_signs, _minor) = meta_message {
@@ -239,6 +266,21 @@ mod tests {
         const AF: Self = Self(8);
         const BF: Self = Self(10);
     }
+
+    #[rstest(
+        info_field_k,
+        expect,
+        case::c("C", MetaMessage::KeySignature(0, false)),
+        case::cm("Cmin", MetaMessage::KeySignature(-3, true)),
+        case::cs("C#", MetaMessage::KeySignature(7, false)),
+        case::csm("C#min", MetaMessage::KeySignature(4, true)),
+        case::csm("Gmin", MetaMessage::KeySignature(-2, true))
+    )]
+    fn test_parse_abc_key_signature_to_midi(info_field_k: &str, expect: MetaMessage) {
+        let result = parse_abc_key_signature_to_midi(info_field_k).unwrap();
+        assert_eq!(result, expect);
+    }
+
     #[rstest(
         root, flat, minor, expect,
         case::c(0, false, false, KeySignature(0, false)),

@@ -2,8 +2,7 @@ use crate::{
     abc_wrappers::{DiatonicPitchClass, MaybeAccidental, MusicSymbol},
     accidentals::{AccidentalTracker, KeySignatureMap},
     errors::AbcParseError,
-    grammar::{abc_key_signature, KeySignatureSymbol},
-    key_signatures::{get_signature_for_diatonic_key, key_signature, PitchClass},
+    key_signatures::{key_signature, parse_abc_key_signature_to_midi},
     midly_wrappers::{MidiMessage, Smf, Track},
     time_signatures::{parse_abc_time_signature_to_midi, TimeSignatureTracker},
 };
@@ -75,6 +74,25 @@ impl TieTracker {
 }
 
 impl Track<'_> {
+    /// Converts an ABC line of music to a track of MIDI events
+    pub fn try_from_events(
+        _title: &str,
+        key_signature_map: &KeySignatureMap,
+        time_signature: &MetaMessage,
+        music_line: &AbcMusicLine,
+    ) -> Result<Self> {
+        let mut events: Vec<TrackEvent> = vec![];
+        let channel = u4::from(0);
+        Self::symbols_into_events(
+            &music_line.symbols,
+            &mut events,
+            channel,
+            key_signature_map,
+            time_signature,
+        )?;
+        Ok(Track(events))
+    }
+
     fn symbols_into_events(
         symbols: &[AbcMusicSymbol],
         events: &mut Vec<TrackEvent>,
@@ -282,32 +300,6 @@ impl<'a> Smf<'a> {
     }
 }
 
-// Key signature parsing (for major keys only for now):
-//                          "F#m" (in ABC source)
-// KeySignatureSymbol {               |
-//     note: Note::F,                 v
-//     accidental: Some(Accidental::Sharp),
-//     minor: true,                   |
-// }                                  |
-// PitchClass {                       v
-//     DiatonicPitchClass(Note::F)  MaybeAccidental(Some(Accidental::Sharp))
-// }                                  |
-// midly::MetaMessage::KeySignature(  v
-//     6,     // root
-//     true, // minor
-// )
-fn parse_abc_key_signature_to_midi(info_field_k: &str) -> Result<midly::MetaMessage> {
-    let KeySignatureSymbol {
-        note,
-        accidental,
-        minor,
-    } = abc_key_signature::key_signature(info_field_k)?;
-    let root_key = PitchClass::from_note_and_accidental(DiatonicPitchClass(note), accidental);
-    let standard_key_signature =
-        get_signature_for_diatonic_key(root_key, Some(Flat) == accidental, minor);
-    Ok(standard_key_signature)
-}
-
 /// Creates the metadata to tack in the front of track 1 of the MIDI stream
 /// As of this version, handles the following correctly:
 /// - track type
@@ -373,8 +365,8 @@ impl<'a> Smf<'a> {
         let mut track = get_front_matter(title, midi_key_signature, mts)?;
         if let Some(AbcTuneBody { music }) = maybe_music {
             for music_line in music {
-                let line_with_info = (title, &key_signature_map, &mts, music_line);
-                let Track(ref mut track_events) = line_with_info.try_into().unwrap();
+                let Track(ref mut track_events) =
+                    Track::try_from_events(title, &key_signature_map, &mts, music_line).unwrap();
                 track.append(track_events);
             }
         }
@@ -384,25 +376,6 @@ impl<'a> Smf<'a> {
         });
         smf.0.tracks.push(track);
         Ok(smf)
-    }
-}
-
-impl<'a> TryFrom<(&str, &KeySignatureMap, &MetaMessage<'_>, &AbcMusicLine)> for Track<'a> {
-    type Error = Error;
-
-    /// Converts an ABC line of music to a track of MIDI events
-    fn try_from(value: (&str, &KeySignatureMap, &MetaMessage, &AbcMusicLine)) -> Result<Self> {
-        let (_title, key_signature_map, time_signature, music_line) = value;
-        let mut events: Vec<TrackEvent> = vec![];
-        let channel = u4::from(0);
-        Self::symbols_into_events(
-            &music_line.symbols,
-            &mut events,
-            channel,
-            key_signature_map,
-            time_signature,
-        )?;
-        Ok(Track(events))
     }
 }
 
@@ -469,7 +442,7 @@ impl From<MaybeAccidental> for i8 {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+
     use crate::{
         abc_wrappers::{DiatonicPitchClass, MaybeAccidental, MusicSymbol},
         accidentals::KeySignatureMap,
@@ -527,13 +500,12 @@ mod tests {
         case("^C C | C", &[1, 239, 1, 239, 1, 239], &[61, 61, 60]),
         case("C z G2 | x2 C'2", &[1, 239, 1, 479, 1, 479], &[60, 67, 72]),
     )]
-    fn music_line_try_into_track(music: &str, expect_deltas: &[u32], expect_notes: &[i8]) {
+    fn track_try_from_events(music: &str, expect_deltas: &[u32], expect_notes: &[i8]) {
         let music_line = abc::music_line(music).unwrap();
         let title = "title";
         let key_signature_map = KeySignatureMap::new();
         let time_signature = MetaMessage::TimeSignature(4, 4, 48, 8);
-        let track = (title, &key_signature_map, &time_signature, &music_line)
-            .try_into()
+        let track = Track::try_from_events(title, &key_signature_map, &time_signature, &music_line)
             .unwrap();
         assert_eq!(deltas(&track), expect_deltas);
         assert_eq!(note_ons_and_offs(&track), expect_notes);
@@ -632,19 +604,5 @@ mod tests {
         let accidental = MaybeAccidental(abc_accidental);
         let semitones: i8 = accidental.into();
         assert_eq!(semitones, expect);
-    }
-
-    #[rstest(
-        info_field_k,
-        expect,
-        case::c("C", MetaMessage::KeySignature(0, false)),
-        case::cm("Cmin", MetaMessage::KeySignature(-3, true)),
-        case::cs("C#", MetaMessage::KeySignature(7, false)),
-        case::csm("C#min", MetaMessage::KeySignature(4, true)),
-        case::csm("Gmin", MetaMessage::KeySignature(-2, true))
-    )]
-    fn test_parse_abc_key_signature_to_midi(info_field_k: &str, expect: MetaMessage) {
-        let result = parse_abc_key_signature_to_midi(info_field_k).unwrap();
-        assert_eq!(result, expect);
     }
 }

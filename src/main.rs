@@ -14,7 +14,7 @@ fn main() {
     let title = "title";
     let key_signature_map = KeySignatureMap::new();
     let time_signature = TimeSignature(4, 4, 48, 8);
-    let track: Track = (title, &key_signature_map, &time_signature, &music_line).try_into().unwrap();
+    let track = Track::try_from_events(title, &key_signature_map, &time_signature, &music_line).unwrap();
     print_events(track);
 }
 
