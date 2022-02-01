@@ -11,10 +11,9 @@ use midly::{MetaMessage::TimeSignature, MidiMessage::NoteOn, TrackEvent, TrackEv
 fn main() {
     let music_line = abc::music_line("!f! ^C[F=AC]3/2[GBD] C[CEG]2").unwrap();
     print_symbols(&music_line.symbols);
-    let title = "title";
     let key_signature_map = KeySignatureMap::new();
     let time_signature = TimeSignature(4, 4, 48, 8);
-    let track = Track::try_from_events(title, &key_signature_map, &time_signature, &music_line).unwrap();
+    let track = Track::try_from_events(&key_signature_map, &time_signature, &music_line).unwrap();
     print_events(track);
 }
 

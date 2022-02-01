@@ -76,7 +76,6 @@ impl TieTracker {
 impl Track<'_> {
     /// Converts an ABC line of music to a track of MIDI events
     pub fn try_from_events(
-        _title: &str,
         key_signature_map: &KeySignatureMap,
         time_signature: &MetaMessage,
         music_line: &AbcMusicLine,
@@ -366,7 +365,7 @@ impl<'a> Smf<'a> {
         if let Some(AbcTuneBody { music }) = maybe_music {
             for music_line in music {
                 let Track(ref mut track_events) =
-                    Track::try_from_events(title, &key_signature_map, &mts, music_line).unwrap();
+                    Track::try_from_events(&key_signature_map, &mts, music_line).unwrap();
                 track.append(track_events);
             }
         }
@@ -502,11 +501,10 @@ mod tests {
     )]
     fn track_try_from_events(music: &str, expect_deltas: &[u32], expect_notes: &[i8]) {
         let music_line = abc::music_line(music).unwrap();
-        let title = "title";
         let key_signature_map = KeySignatureMap::new();
         let time_signature = MetaMessage::TimeSignature(4, 4, 48, 8);
-        let track = Track::try_from_events(title, &key_signature_map, &time_signature, &music_line)
-            .unwrap();
+        let track =
+            Track::try_from_events(&key_signature_map, &time_signature, &music_line).unwrap();
         assert_eq!(deltas(&track), expect_deltas);
         assert_eq!(note_ons_and_offs(&track), expect_notes);
     }
