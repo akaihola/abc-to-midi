@@ -22,10 +22,14 @@ impl<'a> TimeSignatureTracker<'a> {
 
     /// Applies currently active time signature as velocity to a note, chord or grace notes
     pub fn apply(&self, time: u32) -> u7 {
-        match time {
-            0 => 105.into(),
-            960 => 95.into(),
-            _ => 80.into(),
+        if let TimeSignatureTracker(TimeSignature(numerator, ..)) = self {
+            match (numerator, time) {
+                (_, 0) => 105.into(),
+                (4, 960) => 95.into(),
+                _ => 80.into(),
+            }
+        } else {
+            panic!("Expected a MIDI time signature instead of {:?}", self.0);
         }
     }
 }

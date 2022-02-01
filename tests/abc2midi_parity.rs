@@ -111,7 +111,8 @@ fn print_midi(smf: &midly::Smf, first_bar_duration: u32) -> Vec<String> {
     case::chord("chord"),
     case::two_bars("two-bars"),
     case::accidentals("accidentals"),
-    case::untitled_reel("untitled-reel")
+    case::untitled_reel("untitled-reel"),
+    case::the_origin_of_the_world("the-origin-of-the-world")
 )]
 fn compare(name: &str) {
     let abc2midi_raw = std::fs::read(format!("test-asset/{name}.mid")).unwrap();
