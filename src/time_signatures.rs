@@ -5,16 +5,16 @@ use midly::{
 };
 
 #[derive(Debug, PartialEq)]
-pub struct TimeSignatureTracker<'a>(&'a MetaMessage<'a>);
+pub struct TimeSignatureTracker(u8, u8);
 
 // Simplified time signature tracking. Doesn't yet implement the full spec
 // as described in the ABC standard v2.1.
 // In particular, doesn't support changing the time signature in the middle.
 // https://abcnotation.com/wiki/abc:standard:v2.1#accidental_directives
-impl<'a> TimeSignatureTracker<'a> {
-    pub fn new(time_signature: &'a MetaMessage) -> Result<Self> {
-        if let TimeSignature(..) = time_signature {
-            Ok(Self(time_signature))
+impl TimeSignatureTracker {
+    pub fn new(time_signature: &MetaMessage) -> Result<Self> {
+        if let TimeSignature(numerator, denominator, ..) = time_signature {
+            Ok(Self(*numerator, *denominator))
         } else {
             bail!("Expected a MIDI time signature instead of {time_signature:?}");
         }
@@ -22,14 +22,11 @@ impl<'a> TimeSignatureTracker<'a> {
 
     /// Applies currently active time signature as velocity to a note, chord or grace notes
     pub fn apply(&self, time: u32) -> u7 {
-        if let TimeSignatureTracker(TimeSignature(numerator, ..)) = self {
-            match (numerator, time) {
-                (_, 0) => 105.into(),
-                (4, 960) => 95.into(),
-                _ => 80.into(),
-            }
-        } else {
-            panic!("Expected a MIDI time signature instead of {:?}", self.0);
+        let numerator = self.0;
+        match (numerator, time) {
+            (_, 0) => 105.into(),
+            (4, 960) => 95.into(),
+            _ => 80.into(),
         }
     }
 }
