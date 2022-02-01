@@ -409,26 +409,21 @@ impl<'a>
             Timing::Metrical(480.into()),
         ));
         let mts = midi_time_signature;
-        let mut first_track = get_front_matter(title, midi_key_signature, mts)?;
-        let mut other_tracks: Vec<Vec<TrackEvent>> = vec![];
+        let mut track = get_front_matter(title, midi_key_signature, mts)?;
         if let Some(AbcTuneBody { music }) = maybe_music {
-            let mut tracks: Vec<Vec<TrackEvent>> = music
-                .iter()
-                .map(|music_line| {
-                    let line_with_info = (title, &key_signature_map, &mts, music_line);
-                    let Track(track) = line_with_info.try_into().unwrap();
-                    track
-                })
-                .collect();
-            first_track.append(&mut tracks.remove(0));
-            other_tracks.append(&mut tracks);
+            for ref mut t in music.iter().map(|music_line| {
+                let line_with_info = (title, &key_signature_map, &mts, music_line);
+                let Track(track_events) = line_with_info.try_into().unwrap();
+                track_events
+            }) {
+                track.append(t);
+            }
         }
-        first_track.push(TrackEvent {
+        track.push(TrackEvent {
             delta: 26.into(),
             kind: Meta(EndOfTrack),
         });
-        smf.0.tracks.push(first_track);
-        smf.0.tracks.append(&mut other_tracks);
+        smf.0.tracks.push(track);
         Ok(smf)
     }
 }
