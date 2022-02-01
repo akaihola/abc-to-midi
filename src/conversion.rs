@@ -2,13 +2,10 @@ use crate::{
     abc_wrappers::{DiatonicPitchClass, MaybeAccidental, MusicSymbol},
     accidentals::{AccidentalTracker, KeySignatureMap},
     errors::AbcParseError,
-    grammar::{
-        abc_key_signature, abc_time_signature, KeySignatureSymbol,
-        TimeSignatureSymbol::{AllaBreve, CommonTime, Meter},
-    },
+    grammar::{abc_key_signature, KeySignatureSymbol},
     key_signatures::{get_signature_for_diatonic_key, key_signature, PitchClass},
     midly_wrappers::{MidiMessage, Smf, Track},
-    time_signatures::TimeSignatureTracker,
+    time_signatures::{parse_abc_time_signature_to_midi, TimeSignatureTracker},
 };
 use abc_parser::datatypes::{
     Accidental::{DoubleFlat, DoubleSharp, Flat, Sharp},
@@ -309,27 +306,6 @@ fn parse_abc_key_signature_to_midi(info_field_k: &str) -> Result<midly::MetaMess
     let standard_key_signature =
         get_signature_for_diatonic_key(root_key, Some(Flat) == accidental, minor);
     Ok(standard_key_signature)
-}
-
-fn parse_abc_time_signature_to_midi(info_field_m: &str) -> Result<midly::MetaMessage> {
-    let (numerator, denominator) = match abc_time_signature::time_signature(info_field_m)? {
-        Some(AllaBreve) => (2, 2),
-        Some(CommonTime) => (4, 4),
-        Some(Meter(num, denom)) => (num, denom),
-        None => (4, 4),
-    };
-    let midi_clocks_per_click = match numerator {
-        3 => 18,
-        _ => 48,
-    }; // TODO: why?
-    let demisemiquavers_per_crotchet = 8;
-    let meter = MetaMessage::TimeSignature(
-        numerator,
-        denominator / 2, // TODO: why?
-        midi_clocks_per_click,
-        demisemiquavers_per_crotchet,
-    );
-    Ok(meter)
 }
 
 /// Creates the metadata to tack in the front of track 1 of the MIDI stream
