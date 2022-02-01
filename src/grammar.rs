@@ -72,7 +72,7 @@ mod tests {
             }
         }
     }
-    
+
     #[rstest(
         info_field_k,
         expect_note,
@@ -119,7 +119,7 @@ mod tests {
         case::b("B", B, None, false),
         case::bm("Bmin", B, None, true),
         case::bs_("B#", B, Some(Sharp), false),
-        case::bsm("B#min", B, Some(Sharp), true),
+        case::bsm("B#min", B, Some(Sharp), true)
     )]
     fn test_parse_abc_key_signature_to_midi(
         info_field_k: &str,
