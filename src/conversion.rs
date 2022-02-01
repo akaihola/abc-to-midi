@@ -2,9 +2,13 @@ use crate::{
     abc_wrappers::{DiatonicPitchClass, MaybeAccidental, MusicSymbol},
     accidentals::{AccidentalTracker, KeySignatureMap},
     errors::AbcParseError,
-    grammar::{abc_key_signature, KeySignatureSymbol},
+    grammar::{
+        abc_key_signature, abc_time_signature, KeySignatureSymbol,
+        TimeSignatureSymbol::{AllaBreve, CommonTime, Meter},
+    },
     key_signatures::{get_signature_for_diatonic_key, key_signature, PitchClass},
     midly_wrappers::{MidiMessage, Smf, Track},
+    time_signatures::TimeSignatureTracker,
 };
 use abc_parser::datatypes::{
     Accidental::{DoubleFlat, DoubleSharp, Flat, Sharp},
@@ -21,7 +25,7 @@ use anyhow::{bail, Error, Result};
 use midly::{
     num::{u28, u4, u7},
     Format, Header,
-    MetaMessage::{self, EndOfTrack, Tempo, Text, TimeSignature, TrackName},
+    MetaMessage::{self, EndOfTrack, Tempo, Text, TrackName},
     MidiMessage::{NoteOff, NoteOn},
     Timing, TrackEvent,
     TrackEventKind::{self, Meta},
@@ -79,10 +83,17 @@ impl Track<'_> {
         events: &mut Vec<TrackEvent>,
         channel: u4,
         key_signature: &KeySignatureMap,
+        time_signature: &MetaMessage,
     ) -> Result<()> {
         let mut accidental_tracker = AccidentalTracker::new(key_signature);
+        let time_signature_tracker = TimeSignatureTracker::new(time_signature)?;
         let mut moments: Vec<Moment> = vec![];
-        Track::symbols_into_moments(symbols, &mut moments, &mut accidental_tracker)?;
+        Track::symbols_into_moments(
+            symbols,
+            &mut moments,
+            &mut accidental_tracker,
+            &time_signature_tracker,
+        )?;
         Track::moments_into_events(moments, events, channel)
     }
 
@@ -125,6 +136,7 @@ impl Track<'_> {
         symbols: impl IntoIterator<Item = &'a AbcMusicSymbol>,
         moments: &mut Vec<Moment>,
         accidental_tracker: &mut AccidentalTracker,
+        time_signature_tracker: &TimeSignatureTracker,
     ) -> Result<()> {
         let mut time = 0u32;
         for symbol in symbols {
@@ -136,11 +148,7 @@ impl Track<'_> {
                     moments.push(Moment {
                         ticks,
                         kind: Track::interpret_symbol(visual_symbol, accidental_tracker)?,
-                        vel: match time {
-                            0 => 105.into(),
-                            960 => 95.into(),
-                            _ => 80.into(),
-                        },
+                        vel: time_signature_tracker.apply(time),
                     });
                     time += u32::from(ticks);
                 }
@@ -303,6 +311,27 @@ fn parse_abc_key_signature_to_midi(info_field_k: &str) -> Result<midly::MetaMess
     Ok(standard_key_signature)
 }
 
+fn parse_abc_time_signature_to_midi(info_field_m: &str) -> Result<midly::MetaMessage> {
+    let (numerator, denominator) = match abc_time_signature::time_signature(info_field_m)? {
+        Some(AllaBreve) => (2, 2),
+        Some(CommonTime) => (4, 4),
+        Some(Meter(num, denom)) => (num, denom),
+        None => (4, 4),
+    };
+    let midi_clocks_per_click = match numerator {
+        3 => 18,
+        _ => 48,
+    }; // TODO: why?
+    let demisemiquavers_per_crotchet = 8;
+    let meter = MetaMessage::TimeSignature(
+        numerator,
+        denominator / 2, // TODO: why?
+        midi_clocks_per_click,
+        demisemiquavers_per_crotchet,
+    );
+    Ok(meter)
+}
+
 impl<'a> TryFrom<&'a AbcTune> for Smf<'a> {
     type Error = Error;
 
@@ -310,15 +339,26 @@ impl<'a> TryFrom<&'a AbcTune> for Smf<'a> {
         let title = Smf::get_info_field(&value.header.info, 'T', None)?;
         let info_field_k = Smf::get_info_field(&value.header.info, 'K', Some("C"))?;
         let midi_key_signature = parse_abc_key_signature_to_midi(info_field_k)?;
+        let info_field_m = Smf::get_info_field(&value.header.info, 'M', Some("C"))?;
+        let midi_time_signature = parse_abc_time_signature_to_midi(info_field_m)?;
         let body = &value.body;
-        let smf: Smf = Smf::try_from((title, midi_key_signature, body))?;
+        let smf: Smf = Smf::try_from((title, midi_key_signature, midi_time_signature, body))?;
         Ok(smf)
     }
 }
 
+/// Creates the metadata to tack in the front of track 1 of the MIDI stream
+/// As of this version, handles the following correctly:
+/// - track type
+/// - key signature
+/// - track name
+/// Not yet implemented and replaced with a constant:
+/// - tempo
+/// - time signature
 fn get_front_matter<'a>(
     title: &'a str,
     key_signature: MetaMessage<'a>,
+    time_signature: MetaMessage<'a>,
 ) -> Result<Vec<TrackEvent<'a>>> {
     Ok(vec![
         TrackEvent {
@@ -335,7 +375,7 @@ fn get_front_matter<'a>(
         },
         TrackEvent {
             delta: 0.into(),
-            kind: Meta(TimeSignature(4, 2, 48, 8)),
+            kind: Meta(time_signature),
         },
         TrackEvent {
             delta: 0.into(),
@@ -344,23 +384,38 @@ fn get_front_matter<'a>(
     ])
 }
 
-impl<'a> TryFrom<(&'a str, MetaMessage<'a>, &Option<AbcTuneBody>)> for Smf<'a> {
+impl<'a>
+    TryFrom<(
+        &'a str,
+        MetaMessage<'a>,
+        MetaMessage<'a>,
+        &Option<AbcTuneBody>,
+    )> for Smf<'a>
+{
     type Error = Error;
 
-    fn try_from(value: (&'a str, MetaMessage<'a>, &Option<AbcTuneBody>)) -> Result<Self> {
-        let (title, midi_key_signature, maybe_music) = value;
+    fn try_from(
+        value: (
+            &'a str,              // title
+            MetaMessage<'a>,      // MIDI key signature
+            MetaMessage<'a>,      // MIDI time signature
+            &Option<AbcTuneBody>, // body of the tune
+        ),
+    ) -> Result<Self> {
+        let (title, midi_key_signature, midi_time_signature, maybe_music) = value;
         let key_signature_map = key_signature(midi_key_signature)?;
         let mut smf: Smf = Smf::new(Header::new(
             Format::SingleTrack,
             Timing::Metrical(480.into()),
         ));
-        let mut first_track = get_front_matter(title, midi_key_signature)?;
+        let mts = midi_time_signature;
+        let mut first_track = get_front_matter(title, midi_key_signature, mts)?;
         let mut other_tracks: Vec<Vec<TrackEvent>> = vec![];
         if let Some(AbcTuneBody { music }) = maybe_music {
             let mut tracks: Vec<Vec<TrackEvent>> = music
                 .iter()
                 .map(|music_line| {
-                    let line_with_info = (title, &key_signature_map, music_line);
+                    let line_with_info = (title, &key_signature_map, &mts, music_line);
                     let Track(track) = line_with_info.try_into().unwrap();
                     track
                 })
@@ -378,15 +433,21 @@ impl<'a> TryFrom<(&'a str, MetaMessage<'a>, &Option<AbcTuneBody>)> for Smf<'a> {
     }
 }
 
-impl<'a> TryFrom<(&str, &KeySignatureMap, &AbcMusicLine)> for Track<'a> {
+impl<'a> TryFrom<(&str, &KeySignatureMap, &MetaMessage<'_>, &AbcMusicLine)> for Track<'a> {
     type Error = Error;
 
     /// Converts an ABC line of music to a track of MIDI events
-    fn try_from(value: (&str, &KeySignatureMap, &AbcMusicLine)) -> Result<Self> {
-        let (_title, key_signature_map, music_line) = value;
+    fn try_from(value: (&str, &KeySignatureMap, &MetaMessage, &AbcMusicLine)) -> Result<Self> {
+        let (_title, key_signature_map, time_signature, music_line) = value;
         let mut events: Vec<TrackEvent> = vec![];
         let channel = u4::from(0);
-        Self::symbols_into_events(&music_line.symbols, &mut events, channel, key_signature_map)?;
+        Self::symbols_into_events(
+            &music_line.symbols,
+            &mut events,
+            channel,
+            key_signature_map,
+            time_signature,
+        )?;
         Ok(Track(events))
     }
 }
@@ -516,7 +577,10 @@ mod tests {
         let music_line = abc::music_line(music).unwrap();
         let title = "title";
         let key_signature_map = KeySignatureMap::new();
-        let track = (title, &key_signature_map, &music_line).try_into().unwrap();
+        let time_signature = MetaMessage::TimeSignature(4, 4, 48, 8);
+        let track = (title, &key_signature_map, &time_signature, &music_line)
+            .try_into()
+            .unwrap();
         assert_eq!(deltas(&track), expect_deltas);
         assert_eq!(note_ons_and_offs(&track), expect_notes);
     }
@@ -529,7 +593,15 @@ mod tests {
         ];
         let mut events = vec![];
         let key_signature_map = KeySignatureMap::new();
-        Track::symbols_into_events(symbols, &mut events, 1.into(), &key_signature_map).unwrap();
+        let time_signature = MetaMessage::TimeSignature(4, 4, 48, 8);
+        Track::symbols_into_events(
+            symbols,
+            &mut events,
+            1.into(),
+            &key_signature_map,
+            &time_signature,
+        )
+        .unwrap();
         let pitches: Vec<i8> = events.iter().filter_map(extract_note_on).collect();
         assert_eq!(pitches, &[61, 61]);
     }

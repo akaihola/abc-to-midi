@@ -7,12 +7,13 @@ use abc_to_midi::{
     accidentals::{AccidentalTracker, KeySignatureMap},
     conversion::Moment,
     midly_wrappers::{Smf, Track},
+    time_signatures::TimeSignatureTracker,
 };
 use midly::{
     self,
     num::u7,
     Header,
-    MetaMessage::{Text, TrackName},
+    MetaMessage::{Text, TimeSignature, TrackName},
     MidiMessage::{NoteOff, NoteOn},
     TrackEvent, TrackEventKind,
 };
@@ -123,11 +124,18 @@ fn compare(name: &str) {
             let mut moments: Vec<Moment> = vec![];
             let key_signature_map = KeySignatureMap::new();
             let mut accidental_tracker = AccidentalTracker::new(&key_signature_map);
+            let time_signature_tracker =
+                TimeSignatureTracker::new(&TimeSignature(4, 4, 48, 8)).unwrap();
             let first_bar_symbols = symbols
                 .iter()
                 .take_while(|&symbol| !matches!(&symbol, Bar(_)));
-            Track::symbols_into_moments(first_bar_symbols, &mut moments, &mut accidental_tracker)
-                .unwrap();
+            Track::symbols_into_moments(
+                first_bar_symbols,
+                &mut moments,
+                &mut accidental_tracker,
+                &time_signature_tracker,
+            )
+            .unwrap();
             moments.iter().map(|moment| moment.ticks.as_int()).sum()
         } else {
             0

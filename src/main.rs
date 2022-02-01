@@ -6,14 +6,15 @@ use abc_parser::{
     },
 };
 use abc_to_midi::{accidentals::KeySignatureMap, midly_wrappers::Track};
-use midly::{MidiMessage::NoteOn, TrackEvent, TrackEventKind::Midi};
+use midly::{MetaMessage::TimeSignature, MidiMessage::NoteOn, TrackEvent, TrackEventKind::Midi};
 
 fn main() {
     let music_line = abc::music_line("!f! ^C[F=AC]3/2[GBD] C[CEG]2").unwrap();
     print_symbols(&music_line.symbols);
     let title = "title";
     let key_signature_map = KeySignatureMap::new();
-    let track: Track = (title, &key_signature_map, &music_line).try_into().unwrap();
+    let time_signature = TimeSignature(4, 4, 48, 8);
+    let track: Track = (title, &key_signature_map, &time_signature, &music_line).try_into().unwrap();
     print_events(track);
 }
 

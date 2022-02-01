@@ -34,6 +34,28 @@ pub grammar abc_key_signature() for str {
 }
 }
 
+#[derive(Debug, PartialEq)]
+pub enum TimeSignatureSymbol {
+    Meter(u8, u8),
+    AllaBreve,
+    CommonTime,
+}
+
+peg::parser! {
+/// Adds key signature parsing which is missing from abc-parser@0.3.0
+pub grammar abc_time_signature() for str {
+    rule number() -> u8
+        = n:$(['1'..='9']['0'..='9']*) { n.parse().unwrap() }
+    rule meter() -> (u8, u8)
+        = numerator:number() "/" denominator:number() { (numerator, denominator) }
+    pub rule time_signature() -> Option<TimeSignatureSymbol>
+        = "C|" { Some(TimeSignatureSymbol::AllaBreve) } /
+          "C" { Some(TimeSignatureSymbol::CommonTime) } /
+          m:meter() { Some(TimeSignatureSymbol::Meter(m.0, m.1)) } /
+          "" { None }
+}
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
