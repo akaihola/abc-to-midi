@@ -144,7 +144,7 @@ fn compare(name: &str) {
     } else {
         0
     };
-    let Smf(abc_to_midi_output) = abc_parsed.try_into().unwrap();
+    let Smf(abc_to_midi_output) = Smf::try_from_tune(abc_parsed).unwrap();
 
     assert_eq!(
         print_midi(&abc_to_midi_output, first_bar_duration),

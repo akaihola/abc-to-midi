@@ -332,21 +332,6 @@ fn parse_abc_time_signature_to_midi(info_field_m: &str) -> Result<midly::MetaMes
     Ok(meter)
 }
 
-impl<'a> TryFrom<&'a AbcTune> for Smf<'a> {
-    type Error = Error;
-
-    fn try_from(value: &'a AbcTune) -> Result<Self> {
-        let title = Smf::get_info_field(&value.header.info, 'T', None)?;
-        let info_field_k = Smf::get_info_field(&value.header.info, 'K', Some("C"))?;
-        let midi_key_signature = parse_abc_key_signature_to_midi(info_field_k)?;
-        let info_field_m = Smf::get_info_field(&value.header.info, 'M', Some("C"))?;
-        let midi_time_signature = parse_abc_time_signature_to_midi(info_field_m)?;
-        let body = &value.body;
-        let smf: Smf = Smf::try_from((title, midi_key_signature, midi_time_signature, body))?;
-        Ok(smf)
-    }
-}
-
 /// Creates the metadata to tack in the front of track 1 of the MIDI stream
 /// As of this version, handles the following correctly:
 /// - track type
@@ -384,25 +369,25 @@ fn get_front_matter<'a>(
     ])
 }
 
-impl<'a>
-    TryFrom<(
-        &'a str,
-        MetaMessage<'a>,
-        MetaMessage<'a>,
-        &Option<AbcTuneBody>,
-    )> for Smf<'a>
-{
-    type Error = Error;
+impl<'a> Smf<'a> {
+    pub fn try_from_tune(tune: &'a AbcTune) -> Result<Self> {
+        let title = Smf::get_info_field(&tune.header.info, 'T', None)?;
+        let info_field_k = Smf::get_info_field(&tune.header.info, 'K', Some("C"))?;
+        let midi_key_signature = parse_abc_key_signature_to_midi(info_field_k)?;
+        let info_field_m = Smf::get_info_field(&tune.header.info, 'M', Some("C"))?;
+        let midi_time_signature = parse_abc_time_signature_to_midi(info_field_m)?;
+        let body = &tune.body;
+        let smf: Smf =
+            Smf::try_from_tune_body(title, midi_key_signature, midi_time_signature, body)?;
+        Ok(smf)
+    }
 
-    fn try_from(
-        value: (
-            &'a str,              // title
-            MetaMessage<'a>,      // MIDI key signature
-            MetaMessage<'a>,      // MIDI time signature
-            &Option<AbcTuneBody>, // body of the tune
-        ),
+    fn try_from_tune_body(
+        title: &'a str,
+        midi_key_signature: MetaMessage<'a>,
+        midi_time_signature: MetaMessage<'a>,
+        maybe_music: &Option<AbcTuneBody>,
     ) -> Result<Self> {
-        let (title, midi_key_signature, midi_time_signature, maybe_music) = value;
         let key_signature_map = key_signature(midi_key_signature)?;
         let mut smf: Smf = Smf::new(Header::new(
             Format::SingleTrack,
