@@ -411,12 +411,10 @@ impl<'a>
         let mts = midi_time_signature;
         let mut track = get_front_matter(title, midi_key_signature, mts)?;
         if let Some(AbcTuneBody { music }) = maybe_music {
-            for ref mut t in music.iter().map(|music_line| {
+            for music_line in music {
                 let line_with_info = (title, &key_signature_map, &mts, music_line);
-                let Track(track_events) = line_with_info.try_into().unwrap();
-                track_events
-            }) {
-                track.append(t);
+                let Track(ref mut track_events) = line_with_info.try_into().unwrap();
+                track.append(track_events);
             }
         }
         track.push(TrackEvent {
